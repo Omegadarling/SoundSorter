@@ -26,8 +26,8 @@ uploaded — everything runs locally.
   name, shuffle.
 - **Drag to reorder**, with keyboard support (arrows to select, ⌥/⌘+arrows to move,
   Space to play/pause, Backspace to remove from the list).
-- **Play all** auditions the whole sequence in order; auto-advance plays the next file
-  when one ends.
+- **Play all** auditions the whole sequence in order; a play-mode toggle picks what
+  happens when a sound ends — auto-play the next, loop the current one, or stop.
 - **Flexible naming**: number as prefix or suffix, custom separator, start number, digit
   padding, or replace every name with a new base name.
 - **Non-destructive**: originals are never touched — exports are copies (folder or ZIP).

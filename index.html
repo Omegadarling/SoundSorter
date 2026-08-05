@@ -15,6 +15,7 @@
     --green:#6ee7a0; --red:#ff7a7a;
   }
   *{box-sizing:border-box}
+  [hidden]{display:none !important}
   html,body{margin:0;padding:0}
   body{
     background:var(--bg); color:var(--text);
@@ -50,6 +51,11 @@
   #folderInfo b{color:var(--text)}
   .toolbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-left:auto}
   .toolbar .chk{display:flex; align-items:center; gap:5px; color:var(--text-dim); font-size:13px; cursor:pointer}
+  .seg{display:flex; border:1px solid var(--border-light); border-radius:8px; overflow:hidden}
+  .seg button{border:none; border-radius:0; padding:6px 10px; font-size:12.5px; color:var(--text-dim); background:var(--bg2)}
+  .seg button+button{border-left:1px solid var(--border-light)}
+  .seg button.active{background:var(--accent); color:#1a1206; font-weight:600}
+  .seg button:hover:not(.active){color:var(--text)}
   #analyzeState{color:var(--text-dim); font-size:13px; min-width:0}
   #volume{width:80px; accent-color:var(--accent)}
 
@@ -138,7 +144,7 @@
 
   /* ---- side panel ---- */
   #panel{
-    position:sticky; top:76px;
+    position:sticky; top:calc(var(--header-h, 64px) + 12px);
     background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:18px;
   }
   #panel h2{font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); margin:0 0 12px}
@@ -192,9 +198,11 @@
       <option value="shuffle">Shuffle</option>
     </select>
     <button id="playAllBtn" title="Audition the whole sequence from the top">▶ Play all</button>
-    <label class="chk" title="When a file ends, automatically play the next one">
-      <input type="checkbox" id="autoAdvance" checked> auto-advance
-    </label>
+    <div class="seg" id="playModeSeg" role="radiogroup" aria-label="What happens when a sound finishes">
+      <button data-mode="advance" title="Play the next sound automatically">⏭ auto-next</button>
+      <button data-mode="loop" title="Loop the current sound until you stop it">🔁 loop one</button>
+      <button data-mode="once" title="Play the sound once, then stop">1× once</button>
+    </div>
     <input type="range" id="volume" min="0" max="1" step="0.01" value="1" title="Volume">
     <button id="openBtn2">Open folder…</button>
   </div>
@@ -246,7 +254,7 @@
       </div>
       <div class="grid3">
         <label>Separator <input type="text" id="sep" value="_"></label>
-        <label>Start at <input type="number" id="startAt" value="1" min="0" step="1"></label>
+        <label>Start at <input type="number" id="startAt" value="1" min="0" max="1000000000" step="1"></label>
         <label>Digits
           <select id="padDigits">
             <option value="auto" selected>auto</option>
@@ -383,13 +391,19 @@ const settings = {
   sep:      '_',
   startAt:  1,
   pad:      'auto',   // 'auto' | '1'..'4'
-  autoAdvance: true,
+  playMode: 'advance',  // 'advance' | 'loop' | 'once'
   includeSub: false,
   volume: 1,
 };
 function loadSettings(){
-  try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}); }
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    if (!saved.playMode && 'autoAdvance' in saved) saved.playMode = saved.autoAdvance ? 'advance' : 'once';
+    delete saved.autoAdvance;
+    Object.assign(settings, saved);
+  }
   catch {}
+  if (!['advance', 'loop', 'once'].includes(settings.playMode)) settings.playMode = 'advance';
 }
 function saveSettings(){
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
@@ -401,7 +415,7 @@ function syncPanelFromSettings(){
   $('#sep').value = settings.sep;
   $('#startAt').value = settings.startAt;
   $('#padDigits').value = settings.pad;
-  $('#autoAdvance').checked = settings.autoAdvance;
+  syncPlayModeUI();
   $('#includeSub').checked = settings.includeSub;
   $('#volume').value = settings.volume;
   player.volume = settings.volume;
@@ -411,7 +425,7 @@ function readPanelIntoSettings(){
   settings.numPos   = ($$('input[name=numPos]').find(r => r.checked) || {}).value || 'prefix';
   settings.baseName = $('#baseName').value;
   settings.sep      = $('#sep').value;
-  settings.startAt  = Math.max(0, parseInt($('#startAt').value, 10) || 0);
+  settings.startAt  = Math.min(1e9, Math.max(0, parseInt($('#startAt').value, 10) || 0));
   settings.pad      = $('#padDigits').value;
   saveSettings();
 }
@@ -434,6 +448,16 @@ function computeNames(){
     it.newName = name + it.ext;
     it.numLabel = num;
   });
+  // Composed names can collide (e.g. empty separator: "1"+"23" vs "12"+"3");
+  // exports would silently overwrite, so disambiguate here for every consumer.
+  const taken = new Set();
+  for (const it of vis){
+    const base = it.ext ? it.newName.slice(0, it.newName.length - it.ext.length) : it.newName;
+    let name = it.newName, k = 2;
+    while (taken.has(name.toLowerCase())){ name = `${base} (${k})${it.ext}`; k++; }
+    taken.add(name.toLowerCase());
+    it.newName = name;
+  }
 }
 function refreshNames(){
   computeNames();
@@ -517,6 +541,7 @@ function finishLoad(found, label){
   $('#toolbar').hidden = false;
   $('#folderInfo').hidden = false;
   setExportStatus('');
+  $('#analyzeState').textContent = '';
   render();
   if (!found.length){
     $('#countInfo').textContent = 'No audio files found in this folder' +
@@ -528,8 +553,14 @@ function finishLoad(found, label){
 /* --- drag & drop a folder onto the page --- */
 function wireDrop(){
   let dragDepth = 0;
-  document.addEventListener('dragover', e => e.preventDefault());
+  const isFileDrag = e => e.dataTransfer && [...(e.dataTransfer.items || [])].some(i => i.kind === 'file');
+  const overField = e => e.target && e.target.closest && e.target.closest('input,textarea');
+  document.addEventListener('dragover', e => {
+    if (!isFileDrag(e) && overField(e)) return; // let text drops reach the rename/separator fields
+    e.preventDefault();
+  });
   document.addEventListener('dragenter', e => {
+    if (!isFileDrag(e) && overField(e)) return;
     e.preventDefault(); dragDepth++;
     $('#emptyState').classList.add('dragover');
   });
@@ -537,8 +568,10 @@ function wireDrop(){
     if (--dragDepth <= 0){ dragDepth = 0; $('#emptyState').classList.remove('dragover'); }
   });
   document.addEventListener('drop', async e => {
-    e.preventDefault(); dragDepth = 0;
+    dragDepth = 0;
     $('#emptyState').classList.remove('dragover');
+    if (!isFileDrag(e) && overField(e)) return; // plain text into a field — browser handles it
+    e.preventDefault();
     const dt = e.dataTransfer;
     if (!dt) return;
     // Must grab handles/entries synchronously — DataTransferItems die after an await.
@@ -582,7 +615,7 @@ function wireDrop(){
           } while (batch.length);
         }
       }
-      for (const entry of entries) await walkEntry(entry, 'drop/');
+      for (const entry of entries) await walkEntry(entry, '');
       if (files.length){ loadFromFileList(files); return; }
     }
     if (plainFiles.length) loadFromFileList(plainFiles.filter(isAudioFile));
@@ -694,6 +727,7 @@ function updateHeaderInfo(){
       e.preventDefault();
       items.forEach(it => it.removed = false);
       render();
+      queueAnalysis(); // restored items may still lack waveforms
     });
     ri.appendChild(a);
   }
@@ -752,7 +786,10 @@ function drawWave(it){
 let audioCtx = null;
 let analysisRunning = false;
 const WAVE_BINS = 280;
-const MAX_DECODE_BYTES = 300 * 1048576;
+const MAX_DECODE_BYTES = 200 * 1048576;        // lossless formats decode ~2-4x their size
+const MAX_DECODE_BYTES_LOSSY = 30 * 1048576;  // lossy formats expand 10-50x into PCM floats
+const LOSSY_EXT = new Set(['.mp3', '.m4a', '.m4b', '.aac', '.opus', '.ogg', '.oga', '.wma',
+                           '.weba', '.webm', '.mka', '.amr', '.mp2']);
 
 function queueAnalysis(){
   if (!analysisRunning) runAnalysis();
@@ -776,13 +813,15 @@ async function runAnalysis(){
     stateEl.textContent = '';
   } finally {
     analysisRunning = false;
-    if (gen === generation) stateEl.textContent = '';
+    if (gen !== generation) queueAnalysis();   // a newer folder loaded mid-run — restart for it
+    else stateEl.textContent = '';
   }
 }
 
 async function analyzeItem(it, gen){
   try {
-    if (it.size > MAX_DECODE_BYTES) throw new Error('file too large to decode');
+    const cap = LOSSY_EXT.has(it.ext.toLowerCase()) ? MAX_DECODE_BYTES_LOSSY : MAX_DECODE_BYTES;
+    if (it.size > cap) throw new Error('file too large to decode');
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const raw = await it.file.arrayBuffer();
     if (gen !== generation) return;
@@ -860,21 +899,26 @@ function urlFor(it){
   return it.url;
 }
 
+let pendingSeekFrac = null; // latest requested seek, applied once metadata is available
+player.addEventListener('loadedmetadata', () => {
+  if (pendingSeekFrac != null && player.duration) player.currentTime = pendingSeekFrac * player.duration;
+  pendingSeekFrac = null;
+});
+
 function playItem(it, frac){
   const url = urlFor(it);
   if (currentId === it.id && player.src === url){
-    if (frac != null && player.duration) player.currentTime = frac * player.duration;
+    if (frac != null){
+      if (player.duration) player.currentTime = frac * player.duration;
+      else pendingSeekFrac = frac;
+    }
     player.play().catch(() => {});
     return;
   }
   const prev = itemById(currentId);
   currentId = it.id;
+  pendingSeekFrac = frac != null && frac > 0 ? frac : null;
   player.src = url;
-  if (frac){
-    player.addEventListener('loadedmetadata', function seekOnce(){
-      if (currentId === it.id && player.duration) player.currentTime = frac * player.duration;
-    }, { once: true });
-  }
   player.play().catch(err => {
     if (err && err.name !== 'AbortError') setExportStatus('Playback failed: ' + err.message, 'err');
   });
@@ -921,6 +965,13 @@ function syncPlayingUI(){
     btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
   }
   $('#playAllBtn').textContent = sequenceMode && !player.paused ? '■ Stop' : '▶ Play all';
+  syncPlayModeUI();
+}
+
+function syncPlayModeUI(){
+  $$('#playModeSeg button').forEach(b => b.classList.toggle('active', b.dataset.mode === settings.playMode));
+  // native gapless looping; Play all overrides it so the sequence can advance
+  player.loop = settings.playMode === 'loop' && !sequenceMode;
 }
 
 let rafId = 0;
@@ -941,7 +992,13 @@ player.addEventListener('pause', () => {
 });
 player.addEventListener('ended', () => {
   const finished = itemById(currentId);
-  if ($('#autoAdvance').checked || sequenceMode){
+  if (settings.playMode === 'loop' && !sequenceMode){
+    // normally handled natively via player.loop; safety net if the flag was cleared mid-play
+    player.currentTime = 0;
+    player.play().catch(() => {});
+    return;
+  }
+  if (sequenceMode || settings.playMode === 'advance'){
     const nxt = nextVisibleAfter(currentId);
     if (nxt){
       playItem(nxt);
@@ -957,6 +1014,19 @@ player.addEventListener('ended', () => {
 player.addEventListener('error', () => {
   const it = itemById(currentId);
   if (it) setExportStatus(`Can't play “${it.name}” — unsupported codec?`, 'err');
+  // a load error leaves paused=false per spec — pause to stop the rAF loop and fix the UI,
+  // then keep a sequence going rather than dying silently (never loop-retry a bad file)
+  player.pause();
+  if (sequenceMode || settings.playMode === 'advance'){
+    const nxt = nextVisibleAfter(currentId);
+    if (nxt){
+      playItem(nxt);
+      selectItem(nxt.id);
+      nxt.el && nxt.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
+  }
+  sequenceMode = false;
   syncPlayingUI();
 });
 
@@ -965,7 +1035,9 @@ let drag = null;
 
 function wireDrag(){
   const list = $('#list');
+  list.addEventListener('contextmenu', e => { if (e.target.closest('.handle')) e.preventDefault(); });
   list.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.isPrimary === false) return;
     const handle = e.target.closest('.handle');
     if (!handle || drag) return;
     const row = handle.closest('li.row');
@@ -1099,8 +1171,11 @@ function moveSelected(delta){
 
 function wireKeyboard(){
   document.addEventListener('keydown', e => {
+    if (drag) return; // list mutations mid-drag would orphan the dragged row
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+    const onInteractive = t instanceof Element && (t.isContentEditable || t.closest('button,a[href],[role="button"]'));
+    if (onInteractive && (e.key === 'Enter' || e.key === ' ')) return; // let the focused control activate natively
     const vis = visibleItems();
     if (!vis.length) return;
     const idx = vis.findIndex(it => it.id === selectedId);
@@ -1171,6 +1246,22 @@ async function exportToFolder(){
     let sameDir = false;
     try { sameDir = dirHandle ? await out.isSameEntry(dirHandle) : false; } catch {}
 
+    // If the output is the source folder, writing item X to a name that is some
+    // item Y's ORIGINAL filename would destroy Y's bytes before Y gets copied.
+    // Same-dir detection is unreliable (drag-drop loads have no handle), so
+    // unconditionally pre-read every such Y into memory before any write.
+    const destNames = new Set(vis.map(x => x.newName));
+    const preload = vis.filter(x => x.newName !== x.name && destNames.has(x.name));
+    try {
+      for (const x of preload){
+        setExportStatus(`Preparing… reading “${x.name}”`);
+        x.exportData = await x.file.arrayBuffer();
+      }
+    } catch (err) {
+      setExportStatus('Export aborted before writing anything — could not read a source file: ' + err.message, 'err');
+      return;
+    }
+
     let done = 0, skipped = 0;
     const errors = [];
     for (const it of vis){
@@ -1178,8 +1269,9 @@ async function exportToFolder(){
       try {
         const fh = await out.getFileHandle(it.newName, { create: true });
         const w = await fh.createWritable();
-        await w.write(it.file);
+        await w.write(it.exportData ?? it.file);
         await w.close();
+        it.exportData = null;
         done++;
         setExportStatus(`Saving… ${done}/${vis.length}`);
       } catch (err) {
@@ -1194,6 +1286,7 @@ async function exportToFolder(){
                       (skipped ? ` (${skipped} skipped — same file)` : ''), 'ok');
     }
   } finally {
+    vis.forEach(x => { x.exportData = null; }); // release any pre-read buffers
     btns.forEach(b => b.disabled = false);
   }
 }
@@ -1242,6 +1335,12 @@ async function buildZipBlob(list, onProgress){
 
   if (list.length > 0xFFFF) throw new Error('Too many files for ZIP format');
 
+  // fail fast before hashing gigabytes: every offset must fit the 32-bit fields (no Zip64)
+  let predicted = 0;
+  for (const it of list) predicted += 30 + te.encode(it.newName).length + it.file.size;
+  if (predicted >= 0xFFFFFFFF || list.some(it => it.file.size >= 0xFFFFFFFF))
+    throw new Error('Total size exceeds the 4 GB ZIP limit — use “Save to folder…” instead');
+
   for (const it of list){
     const nameBytes = te.encode(it.newName);
     const { time, date } = dosDateTime(it.file.lastModified);
@@ -1250,7 +1349,7 @@ async function buildZipBlob(list, onProgress){
       onProgress && onProgress(readBytes / totalBytes);
     });
     const size = it.file.size;
-    if (size >= 0xFFFFFFFF || offset >= 0xFFFFFFFF)
+    if (size >= 0xFFFFFFFF)
       throw new Error('Files too large for ZIP — use “Save to folder…” instead');
 
     const lh = new ArrayBuffer(30);
@@ -1269,6 +1368,8 @@ async function buildZipBlob(list, onProgress){
     parts.push(lh, nameBytes, it.file);
     central.push({ nameBytes, crc, size, time, date, offset });
     offset += 30 + nameBytes.length + size;
+    if (offset >= 0xFFFFFFFF) // re-check AFTER accumulating, or cdStart truncates mod 2^32
+      throw new Error('Total size exceeds the 4 GB ZIP limit — use “Save to folder…” instead');
   }
 
   let cdSize = 0;
@@ -1344,7 +1445,11 @@ function wirePanel(){
     $$('input[name=stemMode]').forEach(r => r.checked = r.value === 'replace');
     rerun();
   });
-  $('#sep').addEventListener('input', rerun);
+  $('#sep').addEventListener('input', e => {
+    const clean = stripIllegal(e.target.value);
+    if (clean !== e.target.value) e.target.value = clean; // show what will actually be used
+    rerun();
+  });
   $('#startAt').addEventListener('input', rerun);
   $('#padDigits').addEventListener('change', rerun);
   $('#exportFolderBtn').addEventListener('click', exportToFolder);
@@ -1355,7 +1460,11 @@ function wireToolbar(){
   $('#openBtn').addEventListener('click', chooseFolder);
   $('#openBtn2').addEventListener('click', chooseFolder);
   $('#includeSub').addEventListener('change', e => { settings.includeSub = e.target.checked; saveSettings(); });
-  $('#autoAdvance').addEventListener('change', e => { settings.autoAdvance = e.target.checked; saveSettings(); });
+  $$('#playModeSeg button').forEach(b => b.addEventListener('click', () => {
+    settings.playMode = b.dataset.mode;
+    saveSettings();
+    syncPlayModeUI();
+  }));
   $('#volume').addEventListener('input', e => {
     player.volume = +e.target.value;
     settings.volume = +e.target.value;
@@ -1377,6 +1486,10 @@ function wireToolbar(){
 
 function init(){
   loadSettings();
+  const header = document.querySelector('header');
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty('--header-h', header.offsetHeight + 'px');
+  }).observe(header);
   syncPanelFromSettings();
   wirePanel();
   wireToolbar();
