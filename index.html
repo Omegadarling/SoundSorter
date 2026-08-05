@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SoundSorter</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>">
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#151a21; --row:#181e26; --row-hover:#1d242e;
+    --border:#252d38; --border-light:#303a47;
+    --text:#d5dde8; --text-dim:#8a97a8; --text-faint:#5c6878;
+    --accent:#ffb454; --accent-dim:#8a6430;
+    --green:#6ee7a0; --red:#ff7a7a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    min-height:100vh; display:flex; flex-direction:column;
+  }
+  button{
+    font:inherit; color:var(--text); background:var(--bg2);
+    border:1px solid var(--border-light); border-radius:8px;
+    padding:7px 14px; cursor:pointer;
+  }
+  button:hover:not(:disabled){background:var(--row-hover); border-color:#3d4a5c}
+  button:disabled{opacity:.45; cursor:default}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#1a1206; font-weight:600}
+  button.primary:hover:not(:disabled){background:#ffc172; border-color:#ffc172}
+  input[type=text],input[type=number],select{
+    font:inherit; color:var(--text); background:var(--bg);
+    border:1px solid var(--border-light); border-radius:6px; padding:5px 8px;
+  }
+  input:focus,select:focus{outline:1px solid var(--accent-dim); border-color:var(--accent-dim)}
+  label{user-select:none}
+  code{background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-size:12px; color:var(--text-dim)}
+
+  header{
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:12px 20px; border-bottom:1px solid var(--border);
+    position:sticky; top:0; background:color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter:blur(8px); z-index:20;
+  }
+  header h1{font-size:17px; margin:0; letter-spacing:.3px}
+  header h1 .logo{color:var(--accent)}
+  #folderInfo{color:var(--text-dim); font-size:13px}
+  #folderInfo b{color:var(--text)}
+  .toolbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-left:auto}
+  .toolbar .chk{display:flex; align-items:center; gap:5px; color:var(--text-dim); font-size:13px; cursor:pointer}
+  #analyzeState{color:var(--text-dim); font-size:13px; min-width:0}
+  #volume{width:80px; accent-color:var(--accent)}
+
+  main{flex:1; padding:18px 20px 40px; width:100%; max-width:1400px; margin:0 auto}
+
+  /* ---- empty state ---- */
+  #emptyState{
+    margin:8vh auto 0; max-width:520px; text-align:center;
+    border:1.5px dashed var(--border-light); border-radius:16px; padding:48px 36px;
+    transition:border-color .15s, background .15s;
+  }
+  #emptyState.dragover{border-color:var(--accent); background:#1a1c16}
+  #emptyState .big{font-size:44px; margin-bottom:10px}
+  #emptyState h2{margin:0 0 6px; font-size:19px}
+  #emptyState p{color:var(--text-dim); margin:6px 0 22px}
+  #emptyState .note{font-size:12px; color:var(--text-faint); margin-top:22px}
+
+  /* ---- workspace ---- */
+  #workspace{display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:22px; align-items:start}
+  @media (max-width:1050px){ #workspace{grid-template-columns:1fr} #panel{position:static !important} }
+
+  #listWrap{min-width:0}
+  #listHeader{display:flex; align-items:baseline; gap:12px; margin:0 0 10px; color:var(--text-dim); font-size:13px}
+  #listHeader .spacer{flex:1}
+
+  ol#list{list-style:none; margin:0; padding:0; position:relative}
+  li.row{
+    display:grid;
+    grid-template-columns:40px 20px 34px minmax(130px,1fr) 280px 74px 76px 26px;
+    align-items:center; gap:10px;
+    background:var(--row); border:1px solid var(--border); border-radius:10px;
+    padding:7px 10px; margin-bottom:6px;
+    user-select:none; -webkit-user-select:none;
+  }
+  li.row:hover{background:var(--row-hover)}
+  li.row.selected{border-color:var(--accent-dim)}
+  li.row.current{border-color:var(--accent)}
+  li.row.dragging{
+    position:relative; z-index:10; opacity:.95;
+    box-shadow:0 8px 28px rgba(0,0,0,.55); border-color:var(--accent);
+    cursor:grabbing;
+  }
+  ol#list.dragActive li.row{transition:none}
+
+  .num{
+    font-variant-numeric:tabular-nums; text-align:center; color:var(--accent);
+    font-weight:700; font-size:15px;
+  }
+  .handle{
+    border:none; background:none; padding:0; width:20px; height:30px;
+    color:var(--text-faint); cursor:grab; touch-action:none;
+    display:flex; align-items:center; justify-content:center; font-size:14px; letter-spacing:1px;
+  }
+  .handle:hover{color:var(--text); background:none}
+  .playBtn{
+    width:34px; height:34px; border-radius:50%; padding:0;
+    display:flex; align-items:center; justify-content:center; font-size:12px;
+  }
+  li.row.playing .playBtn{background:var(--accent); border-color:var(--accent); color:#1a1206}
+  .meta{min-width:0; display:flex; flex-direction:column; gap:2px}
+  .meta .orig{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500}
+  .meta .newname{
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font-size:12px; color:var(--accent); opacity:.85; font-variant-numeric:tabular-nums;
+  }
+  .meta .sub{font-size:11px; color:var(--text-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  canvas.wave{width:280px; height:36px; display:block; cursor:pointer; border-radius:4px}
+  .durCell{display:flex; flex-direction:column; align-items:flex-end; gap:1px}
+  .dur{font-variant-numeric:tabular-nums; font-size:13px; white-space:nowrap}
+  .fsize{font-size:11px; color:var(--text-faint); white-space:nowrap}
+  .dbChip{
+    justify-self:end; font-size:11.5px; font-variant-numeric:tabular-nums;
+    padding:3px 7px; border-radius:20px; background:var(--bg); color:var(--text-dim);
+    border:1px solid var(--border); white-space:nowrap;
+  }
+  .removeBtn{
+    border:none; background:none; color:var(--text-faint); font-size:14px;
+    width:26px; height:26px; padding:0; border-radius:6px;
+  }
+  .removeBtn:hover{color:var(--red); background:var(--bg)}
+  @media (max-width:1250px){
+    li.row{grid-template-columns:40px 20px 34px minmax(130px,1fr) 200px 74px 26px}
+    .dbChip{display:none}
+    canvas.wave{width:200px}
+  }
+
+  /* ---- side panel ---- */
+  #panel{
+    position:sticky; top:76px;
+    background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:18px;
+  }
+  #panel h2{font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); margin:0 0 12px}
+  #panel h2:not(:first-child){margin-top:22px}
+  .field{margin-bottom:14px}
+  .field>.flabel{display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px}
+  .radioRow{display:flex; flex-direction:column; gap:6px}
+  .radioRow label{display:flex; align-items:center; gap:7px; cursor:pointer; font-size:13.5px; flex-wrap:wrap}
+  .radioRow input[type=radio]{accent-color:var(--accent)}
+  #baseName{flex:1; min-width:90px}
+  .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px}
+  .grid3 label{display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim)}
+  .grid3 input,.grid3 select{width:100%}
+  #namePreview{
+    background:var(--bg); border:1px solid var(--border); border-radius:8px;
+    padding:8px 10px; font-size:12.5px; color:var(--green);
+    font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #panel .btnCol{display:flex; flex-direction:column; gap:8px}
+  #exportStatus{margin-top:10px; font-size:12.5px; color:var(--text-dim); min-height:18px; word-break:break-word}
+  #exportStatus.err{color:var(--red)}
+  #exportStatus.ok{color:var(--green)}
+
+  footer{
+    padding:10px 20px 16px; border-top:1px solid var(--border);
+    color:var(--text-faint); font-size:12px; display:flex; gap:18px; flex-wrap:wrap;
+  }
+  footer .spacer{flex:1}
+  kbd{
+    background:var(--bg2); border:1px solid var(--border-light); border-bottom-width:2px;
+    border-radius:4px; padding:0 5px; font-size:11px; font-family:inherit;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="logo">▁▃▅▇</span> SoundSorter</h1>
+  <span id="folderInfo" hidden></span>
+  <div class="toolbar" id="toolbar" hidden>
+    <span id="analyzeState"></span>
+    <select id="sortSelect" title="Apply a starting order, then fine-tune by dragging">
+      <option value="" disabled selected>Sort by…</option>
+      <option value="loudAsc">Loudness: quiet → loud</option>
+      <option value="loudDesc">Loudness: loud → quiet</option>
+      <option value="durAsc">Duration: short → long</option>
+      <option value="durDesc">Duration: long → short</option>
+      <option value="name">Filename (A–Z)</option>
+      <option value="original">Original order</option>
+      <option value="reverse">Reverse current</option>
+      <option value="shuffle">Shuffle</option>
+    </select>
+    <button id="playAllBtn" title="Audition the whole sequence from the top">▶ Play all</button>
+    <label class="chk" title="When a file ends, automatically play the next one">
+      <input type="checkbox" id="autoAdvance" checked> auto-advance
+    </label>
+    <input type="range" id="volume" min="0" max="1" step="0.01" value="1" title="Volume">
+    <button id="openBtn2">Open folder…</button>
+  </div>
+</header>
+
+<main>
+  <section id="emptyState">
+    <div class="big">🔊</div>
+    <h2>Sort your sounds by ear (and by eye)</h2>
+    <p>Pick a folder of audio files. Audition them, drag them into your preferred order —
+       small sounds first, grand finale last — then save renamed copies with the order baked
+       into the filenames.</p>
+    <button id="openBtn" class="primary">Choose folder…</button>
+    <p style="margin-top:14px">or drop a folder anywhere on this page</p>
+    <label class="chk" style="justify-content:center; display:flex; align-items:center; gap:6px; color:var(--text-dim); font-size:13px">
+      <input type="checkbox" id="includeSub"> include subfolders
+    </label>
+    <p class="note" id="supportNote">
+      Everything runs locally in your browser — files never leave your machine.<br>
+      Chrome / Edge can save straight into a folder; other browsers export a ZIP.
+    </p>
+  </section>
+
+  <section id="workspace" hidden>
+    <div id="listWrap">
+      <div id="listHeader">
+        <span id="countInfo"></span>
+        <span class="spacer"></span>
+        <span id="removedInfo"></span>
+      </div>
+      <ol id="list"></ol>
+    </div>
+
+    <aside id="panel">
+      <h2>Filenames</h2>
+      <div class="field">
+        <div class="radioRow">
+          <label><input type="radio" name="stemMode" value="keep" checked> Keep original name</label>
+          <label><input type="radio" name="stemMode" value="replace"> Rename to
+            <input type="text" id="baseName" placeholder="e.g. impact"></label>
+        </div>
+      </div>
+      <div class="field">
+        <span class="flabel">Order number goes…</span>
+        <div class="radioRow">
+          <label><input type="radio" name="numPos" value="prefix" checked> before — <code>01_name.wav</code></label>
+          <label><input type="radio" name="numPos" value="suffix"> after — <code>name_01.wav</code></label>
+        </div>
+      </div>
+      <div class="grid3">
+        <label>Separator <input type="text" id="sep" value="_"></label>
+        <label>Start at <input type="number" id="startAt" value="1" min="0" step="1"></label>
+        <label>Digits
+          <select id="padDigits">
+            <option value="auto" selected>auto</option>
+            <option value="1">1</option><option value="2">2</option>
+            <option value="3">3</option><option value="4">4</option>
+          </select>
+        </label>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <span class="flabel">First file will be saved as</span>
+        <div id="namePreview">—</div>
+      </div>
+
+      <h2>Save copies</h2>
+      <div class="btnCol">
+        <button id="exportFolderBtn" class="primary">Save to folder…</button>
+        <button id="exportZipBtn">Download .zip</button>
+      </div>
+      <div id="exportStatus"></div>
+    </aside>
+  </section>
+</main>
+
+<footer>
+  <span><kbd>Space</kbd> play/pause</span>
+  <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
+  <span><kbd>⌥</kbd>+<kbd>↑</kbd><kbd>↓</kbd> move in order</span>
+  <span><kbd>Enter</kbd> play from start</span>
+  <span><kbd>⌫</kbd> remove from list</span>
+  <span class="spacer"></span>
+  <span>SoundSorter — local only, nothing is uploaded</span>
+</footer>
+
+<script>
+'use strict';
+
+/* ================================================================== utils */
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const collator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
+
+const AUDIO_EXT = new Set(['mp3','wav','wave','ogg','oga','flac','m4a','m4b','aac','opus',
+                           'aiff','aif','aifc','wma','weba','webm','mka','caf','mp2','amr']);
+
+function isAudioFile(nameOrFile){
+  const name = typeof nameOrFile === 'string' ? nameOrFile : nameOrFile.name;
+  if (name.startsWith('.')) return false;              // .DS_Store, ._AppleDouble junk
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  if (AUDIO_EXT.has(ext)) return true;
+  return typeof nameOrFile !== 'string' && (nameOrFile.type || '').startsWith('audio/');
+}
+
+function fmtTime(s){
+  if (s == null || !isFinite(s)) return '–:––';
+  s = Math.round(s);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+           : `${m}:${String(sec).padStart(2,'0')}`;
+}
+function fmtSize(b){
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(0) + ' KB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
+}
+function stripIllegal(s){
+  // remove path separators, Windows-illegal punctuation, and control chars
+  var illegal = '\\/:*?"<>|';
+  var out = '';
+  for (var i = 0; i < s.length; i++){
+    var code = s.charCodeAt(i);
+    if (code < 32 || code === 127) continue;
+    if (illegal.indexOf(s[i]) >= 0) continue;
+    out += s[i];
+  }
+  return out;
+}
+function sanitizeName(s){
+  return stripIllegal(s).replace(/^[\s.]+|[\s.]+$/g, '');
+}
+
+function dbColor(db){
+  // map -50..0 dB → blue..red
+  const t = Math.min(1, Math.max(0, (db + 50) / 50));
+  return `hsl(${Math.round(210 - 210*t)} 75% 58%)`;
+}
+
+/* ================================================================== state */
+let items = [];            // all loaded items (incl. removed); order = display order
+let dirHandle = null;      // source directory handle when FS Access API was used
+let folderName = '';
+let selectedId = null;
+let currentId = null;      // item loaded in the player
+let sequenceMode = false;  // "Play all" keeps advancing even if auto-advance is off
+let nextId = 1;
+let generation = 0;        // bumped on every folder load; stale async work checks it
+
+const player = new Audio();
+player.preload = 'auto';
+
+const visibleItems = () => items.filter(it => !it.removed);
+const itemById = id => items.find(it => it.id === id);
+
+function makeItem(file, relPath){
+  const name = file.name;
+  const dot = name.lastIndexOf('.');
+  return {
+    id: nextId++,
+    file, name,
+    stem: dot > 0 ? name.slice(0, dot) : name,
+    ext:  dot > 0 ? name.slice(dot) : '',
+    relPath: relPath || name,
+    size: file.size,
+    loadIndex: 0,
+    url: null,
+    duration: undefined,
+    peaks: null,          // Float32Array of per-bin |peak|, drawn as the waveform
+    db: null,             // "impact" loudness: max RMS over a 400 ms window, in dBFS
+    rmsDb: null,          // whole-file RMS, in dBFS
+    analyzeFailed: false,
+    removed: false,
+    newName: '',
+    el: null,
+  };
+}
+
+/* ================================================================== settings */
+const SETTINGS_KEY = 'soundSorter.settings.v1';
+const settings = {
+  stemMode: 'keep',   // 'keep' | 'replace'
+  baseName: '',
+  numPos:   'prefix', // 'prefix' | 'suffix'
+  sep:      '_',
+  startAt:  1,
+  pad:      'auto',   // 'auto' | '1'..'4'
+  autoAdvance: true,
+  includeSub: false,
+  volume: 1,
+};
+function loadSettings(){
+  try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}); }
+  catch {}
+}
+function saveSettings(){
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+}
+function syncPanelFromSettings(){
+  $$('input[name=stemMode]').forEach(r => r.checked = r.value === settings.stemMode);
+  $$('input[name=numPos]').forEach(r => r.checked = r.value === settings.numPos);
+  $('#baseName').value = settings.baseName;
+  $('#sep').value = settings.sep;
+  $('#startAt').value = settings.startAt;
+  $('#padDigits').value = settings.pad;
+  $('#autoAdvance').checked = settings.autoAdvance;
+  $('#includeSub').checked = settings.includeSub;
+  $('#volume').value = settings.volume;
+  player.volume = settings.volume;
+}
+function readPanelIntoSettings(){
+  settings.stemMode = ($$('input[name=stemMode]').find(r => r.checked) || {}).value || 'keep';
+  settings.numPos   = ($$('input[name=numPos]').find(r => r.checked) || {}).value || 'prefix';
+  settings.baseName = $('#baseName').value;
+  settings.sep      = $('#sep').value;
+  settings.startAt  = Math.max(0, parseInt($('#startAt').value, 10) || 0);
+  settings.pad      = $('#padDigits').value;
+  saveSettings();
+}
+
+/* ================================================================== naming */
+function computeNames(){
+  const vis = visibleItems();
+  const padLen = settings.pad === 'auto'
+    ? Math.max(2, String(settings.startAt + Math.max(vis.length - 1, 0)).length)
+    : parseInt(settings.pad, 10);
+  const sep = stripIllegal(settings.sep);
+  const replaceStem = settings.stemMode === 'replace' ? sanitizeName(settings.baseName) : '';
+  vis.forEach((it, i) => {
+    const num = String(settings.startAt + i).padStart(padLen, '0');
+    let stem = replaceStem || it.stem;
+    if (stem.length > 180) stem = stem.slice(0, 180);
+    let name = settings.numPos === 'suffix' ? `${stem}${sep}${num}` : `${num}${sep}${stem}`;
+    name = sanitizeName(name);
+    if (!name) name = num;
+    it.newName = name + it.ext;
+    it.numLabel = num;
+  });
+}
+function refreshNames(){
+  computeNames();
+  for (const it of visibleItems()){
+    if (!it.el) continue;
+    it.el.querySelector('.num').textContent = it.numLabel;
+    it.el.querySelector('.newname').textContent = it.newName;
+  }
+  const first = visibleItems()[0];
+  $('#namePreview').textContent = first ? first.newName : '—';
+}
+
+/* ================================================================== folder loading */
+async function chooseFolder(){
+  if (window.showDirectoryPicker){
+    let handle;
+    try {
+      handle = await showDirectoryPicker({ id: 'soundsorter-src', mode: 'read' });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      console.error(err);
+      setExportStatus('Could not open folder: ' + err.message, 'err');
+      return;
+    }
+    await loadFromDirHandle(handle);
+  } else {
+    $('#dirInputFallback').click();
+  }
+}
+
+async function loadFromDirHandle(handle){
+  const found = [];
+  async function scan(h, path){
+    for await (const entry of h.values()){
+      if (entry.kind === 'file'){
+        if (isAudioFile(entry.name)){
+          try {
+            const file = await entry.getFile();
+            found.push(makeItem(file, path + entry.name));
+          } catch (err) { console.warn('skip', entry.name, err); }
+        }
+      } else if (entry.kind === 'directory' && settings.includeSub && !entry.name.startsWith('.')){
+        await scan(entry, path + entry.name + '/');
+      }
+    }
+  }
+  await scan(handle, '');
+  dirHandle = handle;
+  finishLoad(found, handle.name);
+}
+
+function loadFromFileList(fileList){
+  // <input webkitdirectory> or drag-dropped plain files
+  const found = [];
+  let top = '';
+  for (const file of fileList){
+    const rel = file.webkitRelativePath || file.name;
+    const parts = rel.split('/');
+    if (parts.length > 1 && !top) top = parts[0];
+    const inner = parts.length > 1 ? parts.slice(1).join('/') : rel;
+    if (!settings.includeSub && inner.includes('/')) continue;
+    if (parts.some(p => p.startsWith('.'))) continue;
+    if (!isAudioFile(file)) continue;
+    found.push(makeItem(file, inner));
+  }
+  dirHandle = null;
+  finishLoad(found, top || 'dropped files');
+}
+
+function finishLoad(found, label){
+  generation++;
+  stopPlayback(true);
+  for (const it of items) if (it.url) URL.revokeObjectURL(it.url);
+  found.sort((a, b) => collator.compare(a.relPath, b.relPath));
+  found.forEach((it, i) => it.loadIndex = i);
+  items = found;
+  selectedId = null;
+  folderName = label;
+  $('#emptyState').hidden = true;
+  $('#workspace').hidden = false;
+  $('#toolbar').hidden = false;
+  $('#folderInfo').hidden = false;
+  setExportStatus('');
+  render();
+  if (!found.length){
+    $('#countInfo').textContent = 'No audio files found in this folder' +
+      (settings.includeSub ? '.' : ' — try enabling “include subfolders” and re-opening.');
+  }
+  queueAnalysis();
+}
+
+/* --- drag & drop a folder onto the page --- */
+function wireDrop(){
+  let dragDepth = 0;
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('dragenter', e => {
+    e.preventDefault(); dragDepth++;
+    $('#emptyState').classList.add('dragover');
+  });
+  document.addEventListener('dragleave', () => {
+    if (--dragDepth <= 0){ dragDepth = 0; $('#emptyState').classList.remove('dragover'); }
+  });
+  document.addEventListener('drop', async e => {
+    e.preventDefault(); dragDepth = 0;
+    $('#emptyState').classList.remove('dragover');
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Must grab handles/entries synchronously — DataTransferItems die after an await.
+    const handlePromises = [...dt.items].map(it =>
+      typeof it.getAsFileSystemHandle === 'function' ? it.getAsFileSystemHandle() : null);
+    const entries = [...dt.items].map(it =>
+      typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null);
+    const plainFiles = [...dt.files];
+
+    if (handlePromises.some(Boolean)){
+      try {
+        const handles = (await Promise.all(handlePromises)).filter(Boolean);
+        const dir = handles.find(h => h.kind === 'directory');
+        if (dir){ await loadFromDirHandle(dir); return; }
+        const files = [];
+        for (const h of handles){
+          if (h.kind === 'file'){
+            const f = await h.getFile();
+            if (isAudioFile(f)) files.push(f);
+          }
+        }
+        if (files.length){ loadFromFileList(files); return; }
+      } catch (err) { console.warn('handle drop failed, falling back', err); }
+    }
+    if (entries.some(Boolean)){
+      const files = [];
+      async function walkEntry(entry, path){
+        if (!entry) return;
+        if (entry.isFile){
+          const f = await new Promise((res, rej) => entry.file(res, rej)).catch(() => null);
+          if (f && isAudioFile(f)){
+            Object.defineProperty(f, 'webkitRelativePath', { value: path + f.name });
+            files.push(f);
+          }
+        } else if (entry.isDirectory){
+          const reader = entry.createReader();
+          let batch;
+          do {
+            batch = await new Promise((res, rej) => reader.readEntries(res, rej)).catch(() => []);
+            for (const sub of batch) await walkEntry(sub, path + entry.name + '/');
+          } while (batch.length);
+        }
+      }
+      for (const entry of entries) await walkEntry(entry, 'drop/');
+      if (files.length){ loadFromFileList(files); return; }
+    }
+    if (plainFiles.length) loadFromFileList(plainFiles.filter(isAudioFile));
+  });
+}
+
+/* ================================================================== rendering */
+function render(){
+  const list = $('#list');
+  list.textContent = '';
+  computeNames();
+  for (const it of visibleItems()) list.appendChild(buildRow(it));
+  syncPlayingUI();
+  updateHeaderInfo();
+  const first = visibleItems()[0];
+  $('#namePreview').textContent = first ? first.newName : '—';
+}
+
+function buildRow(it){
+  const li = document.createElement('li');
+  li.className = 'row';
+  li.dataset.id = it.id;
+  li.innerHTML = `
+    <div class="num"></div>
+    <button class="handle" title="Drag to reorder" aria-label="Drag to reorder">⣿</button>
+    <button class="playBtn" title="Play / pause" aria-label="Play">▶</button>
+    <div class="meta">
+      <span class="orig"></span>
+      <span class="newname"></span>
+    </div>
+    <canvas class="wave" title="Click to play from here"></canvas>
+    <div class="durCell"><span class="dur"></span><span class="fsize"></span></div>
+    <span class="dbChip" title="Peak loudness (max RMS over 400 ms), dBFS">…</span>
+    <button class="removeBtn" title="Remove from list (file is not deleted)" aria-label="Remove">✕</button>`;
+  it.el = li;
+  li.querySelector('.num').textContent = it.numLabel || '';
+  li.querySelector('.orig').textContent = it.name;
+  li.querySelector('.orig').title = it.relPath;
+  li.querySelector('.newname').textContent = it.newName;
+  li.querySelector('.fsize').textContent = fmtSize(it.size);
+  updateRowStats(it);
+  if (selectedId === it.id) li.classList.add('selected');
+
+  const canvas = li.querySelector('canvas.wave');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(280 * dpr);
+  canvas.height = Math.round(36 * dpr);
+  drawWave(it);
+
+  li.addEventListener('click', e => {
+    if (e.target.closest('button') || e.target.closest('canvas')) return;
+    selectItem(it.id);
+  });
+  li.addEventListener('dblclick', e => {
+    if (e.target.closest('button') || e.target.closest('canvas')) return;
+    playItem(it, 0);
+  });
+  li.querySelector('.playBtn').addEventListener('click', () => togglePlay(it));
+  li.querySelector('.removeBtn').addEventListener('click', () => removeItem(it));
+  canvas.addEventListener('click', e => {
+    const frac = Math.min(1, Math.max(0, e.offsetX / canvas.clientWidth));
+    selectItem(it.id);
+    playItem(it, frac);
+  });
+  return li;
+}
+
+function updateRowStats(it){
+  if (!it.el) return;
+  const durEl = it.el.querySelector('.dur');
+  if (it.id === currentId && player.duration){
+    durEl.textContent = `${fmtTime(player.currentTime)} / ${fmtTime(player.duration)}`;
+  } else {
+    durEl.textContent = fmtTime(it.duration);
+  }
+  const chip = it.el.querySelector('.dbChip');
+  if (it.db != null){
+    chip.textContent = it.db.toFixed(1) + ' dB';
+    chip.style.color = dbColor(it.db);
+    chip.style.borderColor = 'color-mix(in srgb, ' + dbColor(it.db) + ' 40%, transparent)';
+  } else if (it.analyzeFailed){
+    chip.textContent = 'n/a';
+  }
+}
+
+function updateHeaderInfo(){
+  const vis = visibleItems();
+  const known = vis.filter(it => isFinite(it.duration));
+  const total = known.reduce((s, it) => s + it.duration, 0);
+  const bytes = vis.reduce((s, it) => s + it.size, 0);
+  let txt = `${vis.length} file${vis.length === 1 ? '' : 's'}`;
+  if (known.length) txt += ` · ${fmtTime(total)}${known.length < vis.length ? '+' : ''} total`;
+  txt += ` · ${fmtSize(bytes)}`;
+  $('#countInfo').textContent = txt;
+  $('#folderInfo').innerHTML = '';
+  const b = document.createElement('b');
+  b.textContent = folderName;
+  $('#folderInfo').appendChild(b);
+
+  const removed = items.filter(it => it.removed).length;
+  const ri = $('#removedInfo');
+  ri.textContent = '';
+  if (removed){
+    ri.append(`${removed} removed · `);
+    const a = document.createElement('a');
+    a.href = '#'; a.textContent = 'restore';
+    a.style.color = 'var(--accent)';
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      items.forEach(it => it.removed = false);
+      render();
+    });
+    ri.appendChild(a);
+  }
+}
+
+function selectItem(id){
+  selectedId = id;
+  $$('#list .row').forEach(el => el.classList.toggle('selected', +el.dataset.id === id));
+}
+
+function removeItem(it){
+  if (it.id === currentId) stopPlayback(true);
+  it.removed = true;
+  if (selectedId === it.id) selectedId = null;
+  render();
+}
+
+/* ================================================================== waveform drawing */
+function drawWave(it){
+  if (!it.el) return;
+  const canvas = it.el.querySelector('canvas.wave');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height, mid = H / 2;
+  ctx.clearRect(0, 0, W, H);
+
+  const isCurrent = it.id === currentId;
+  const frac = isCurrent && player.duration ? player.currentTime / player.duration : 0;
+
+  if (it.peaks){
+    const bins = it.peaks.length;
+    const barW = W / bins;
+    for (let i = 0; i < bins; i++){
+      // gamma-compress a little so quiet material stays visible,
+      // but keep absolute scale so loud files visibly tower over quiet ones
+      const amp = Math.pow(it.peaks[i], 0.75);
+      const h = Math.max(1, amp * (H - 4));
+      ctx.fillStyle = (i / bins) < frac ? '#ffb454' : '#4a5768';
+      ctx.fillRect(i * barW, mid - h / 2, Math.max(1, barW - 0.4), h);
+    }
+  } else {
+    ctx.fillStyle = '#333d4b';
+    ctx.fillRect(0, mid - 1, W, 2);
+    if (frac > 0){
+      ctx.fillStyle = '#ffb454';
+      ctx.fillRect(0, mid - 1, W * frac, 2);
+    }
+  }
+  if (isCurrent && frac > 0){
+    ctx.fillStyle = '#ffd9a0';
+    ctx.fillRect(Math.min(W - 2, frac * W), 0, 2, H);
+  }
+}
+
+/* ================================================================== analysis */
+let audioCtx = null;
+let analysisRunning = false;
+const WAVE_BINS = 280;
+const MAX_DECODE_BYTES = 300 * 1048576;
+
+function queueAnalysis(){
+  if (!analysisRunning) runAnalysis();
+}
+
+async function runAnalysis(){
+  analysisRunning = true;
+  const gen = generation;
+  const stateEl = $('#analyzeState');
+  try {
+    while (true){
+      if (gen !== generation) return;
+      const pending = visibleItems().filter(it => !it.peaks && !it.analyzeFailed);
+      if (!pending.length) break;
+      const done = visibleItems().length - pending.length;
+      stateEl.textContent = `analyzing ${done + 1}/${visibleItems().length}…`;
+      await analyzeItem(pending[0], gen);
+      if (gen !== generation) return;
+      updateHeaderInfo();
+    }
+    stateEl.textContent = '';
+  } finally {
+    analysisRunning = false;
+    if (gen === generation) stateEl.textContent = '';
+  }
+}
+
+async function analyzeItem(it, gen){
+  try {
+    if (it.size > MAX_DECODE_BYTES) throw new Error('file too large to decode');
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const raw = await it.file.arrayBuffer();
+    if (gen !== generation) return;
+    const buf = await audioCtx.decodeAudioData(raw);
+    if (gen !== generation) return;
+
+    const len = buf.length, chans = buf.numberOfChannels, sr = buf.sampleRate;
+    it.duration = buf.duration;
+
+    const peaks = new Float32Array(WAVE_BINS);
+    const samplesPerBin = Math.max(1, len / WAVE_BINS);
+    const hop = Math.max(1, Math.round(sr * 0.1));         // 100 ms blocks
+    const blocks = Math.ceil(len / hop);
+    const blockSums = new Float64Array(blocks);            // sum of squares per block, all channels
+    let totalSq = 0;
+
+    for (let c = 0; c < chans; c++){
+      const data = buf.getChannelData(c);
+      for (let i = 0; i < len; i++){
+        const v = data[i];
+        const a = v < 0 ? -v : v;
+        const bin = (i / samplesPerBin) | 0;
+        if (a > peaks[bin >= WAVE_BINS ? WAVE_BINS - 1 : bin]) peaks[bin >= WAVE_BINS ? WAVE_BINS - 1 : bin] = a;
+        const sq = v * v;
+        blockSums[(i / hop) | 0] += sq;
+        totalSq += sq;
+      }
+    }
+    const totalSamples = len * chans;
+    it.rmsDb = 10 * Math.log10(totalSq / totalSamples + 1e-12);
+
+    // impact loudness: loudest 400 ms window (4 consecutive 100 ms blocks)
+    const winBlocks = Math.min(4, blocks);
+    let maxPow = 0;
+    let acc = 0;
+    for (let k = 0; k < blocks; k++){
+      acc += blockSums[k];
+      if (k >= winBlocks) acc -= blockSums[k - winBlocks];
+      if (k >= winBlocks - 1){
+        const nSamples = Math.min(hop * winBlocks, len) * chans;
+        const pow = acc / nSamples;
+        if (pow > maxPow) maxPow = pow;
+      }
+    }
+    it.db = 10 * Math.log10(maxPow + 1e-12);
+    it.peaks = peaks;
+    drawWave(it);
+    updateRowStats(it);
+  } catch (err) {
+    console.warn('analyze failed:', it.name, err);
+    it.analyzeFailed = true;
+    updateRowStats(it);
+    fallbackDuration(it, gen);
+  }
+}
+
+function fallbackDuration(it, gen){
+  // duration via <audio> metadata for files WebAudio can't decode
+  const a = new Audio();
+  a.preload = 'metadata';
+  a.src = urlFor(it);
+  a.addEventListener('loadedmetadata', () => {
+    if (gen !== generation) return;
+    it.duration = a.duration;
+    updateRowStats(it);
+    updateHeaderInfo();
+    a.removeAttribute('src');
+  }, { once: true });
+  a.addEventListener('error', () => a.removeAttribute('src'), { once: true });
+}
+
+/* ================================================================== playback */
+function urlFor(it){
+  if (!it.url) it.url = URL.createObjectURL(it.file);
+  return it.url;
+}
+
+function playItem(it, frac){
+  const url = urlFor(it);
+  if (currentId === it.id && player.src === url){
+    if (frac != null && player.duration) player.currentTime = frac * player.duration;
+    player.play().catch(() => {});
+    return;
+  }
+  const prev = itemById(currentId);
+  currentId = it.id;
+  player.src = url;
+  if (frac){
+    player.addEventListener('loadedmetadata', function seekOnce(){
+      if (currentId === it.id && player.duration) player.currentTime = frac * player.duration;
+    }, { once: true });
+  }
+  player.play().catch(err => {
+    if (err && err.name !== 'AbortError') setExportStatus('Playback failed: ' + err.message, 'err');
+  });
+  if (prev && prev !== it){ updateRowStats(prev); drawWave(prev); }
+  syncPlayingUI();
+}
+
+function togglePlay(it){
+  if (currentId === it.id && !player.paused){
+    sequenceMode = false;
+    player.pause();
+  } else {
+    playItem(it);
+  }
+}
+
+function stopPlayback(clearCurrent){
+  sequenceMode = false;
+  player.pause();
+  const prev = itemById(currentId);
+  if (clearCurrent){
+    currentId = null;
+    player.removeAttribute('src');
+    if (prev){ updateRowStats(prev); drawWave(prev); }
+  }
+  syncPlayingUI();
+}
+
+function nextVisibleAfter(id){
+  const vis = visibleItems();
+  const idx = vis.findIndex(it => it.id === id);
+  return idx >= 0 && idx < vis.length - 1 ? vis[idx + 1] : null;
+}
+
+function syncPlayingUI(){
+  for (const it of visibleItems()){
+    if (!it.el) continue;
+    const isCur = it.id === currentId;
+    const isPlaying = isCur && !player.paused && !player.ended;
+    it.el.classList.toggle('current', isCur);
+    it.el.classList.toggle('playing', isPlaying);
+    const btn = it.el.querySelector('.playBtn');
+    btn.textContent = isPlaying ? '❚❚' : '▶';
+    btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
+  }
+  $('#playAllBtn').textContent = sequenceMode && !player.paused ? '■ Stop' : '▶ Play all';
+}
+
+let rafId = 0;
+function tick(){
+  const it = itemById(currentId);
+  if (it){ drawWave(it); updateRowStats(it); }
+  if (!player.paused && !player.ended){
+    rafId = requestAnimationFrame(tick);
+  } else {
+    rafId = 0;
+  }
+}
+player.addEventListener('play',  () => { syncPlayingUI(); if (!rafId) rafId = requestAnimationFrame(tick); });
+player.addEventListener('pause', () => {
+  syncPlayingUI();
+  const it = itemById(currentId);
+  if (it){ drawWave(it); updateRowStats(it); }
+});
+player.addEventListener('ended', () => {
+  const finished = itemById(currentId);
+  if ($('#autoAdvance').checked || sequenceMode){
+    const nxt = nextVisibleAfter(currentId);
+    if (nxt){
+      playItem(nxt);
+      selectItem(nxt.id);
+      nxt.el && nxt.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
+  }
+  sequenceMode = false;
+  if (finished){ drawWave(finished); updateRowStats(finished); }
+  syncPlayingUI();
+});
+player.addEventListener('error', () => {
+  const it = itemById(currentId);
+  if (it) setExportStatus(`Can't play “${it.name}” — unsupported codec?`, 'err');
+  syncPlayingUI();
+});
+
+/* ================================================================== drag to reorder */
+let drag = null;
+
+function wireDrag(){
+  const list = $('#list');
+  list.addEventListener('pointerdown', e => {
+    const handle = e.target.closest('.handle');
+    if (!handle || drag) return;
+    const row = handle.closest('li.row');
+    if (!row) return;
+    e.preventDefault();
+    try { handle.setPointerCapture(e.pointerId); } catch {}
+    drag = {
+      row,
+      pointerId: e.pointerId,
+      baseTop: row.offsetTop,
+      startDocY: e.clientY + window.scrollY,
+      lastClientY: e.clientY,
+      raf: 0,
+    };
+    row.classList.add('dragging');
+    list.classList.add('dragActive');
+    selectItem(+row.dataset.id);
+    window.addEventListener('pointermove', dragMove);
+    window.addEventListener('pointerup', dragEnd);
+    window.addEventListener('pointercancel', dragEnd);
+    drag.raf = requestAnimationFrame(dragAutoScroll);
+  });
+}
+
+function repositionDrag(){
+  if (!drag) return;
+  const docY = drag.lastClientY + window.scrollY;
+  const desiredTop = drag.baseTop + (docY - drag.startDocY);
+  const row = drag.row;
+  const mid = desiredTop + row.offsetHeight / 2;
+  let moved = true;
+  while (moved){
+    moved = false;
+    const prev = row.previousElementSibling;
+    if (prev && mid < prev.offsetTop + prev.offsetHeight / 2){
+      prev.before(row); moved = true; continue;
+    }
+    const next = row.nextElementSibling;
+    if (next && mid > next.offsetTop + next.offsetHeight / 2){
+      next.after(row); moved = true;
+    }
+  }
+  row.style.transform = `translateY(${desiredTop - row.offsetTop}px)`;
+}
+
+function dragMove(e){
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  drag.lastClientY = e.clientY;
+  repositionDrag();
+}
+
+function dragAutoScroll(){
+  if (!drag) return;
+  const y = drag.lastClientY;
+  const margin = 90, speed = 14;
+  if (y < margin) window.scrollBy(0, -speed * (1 - y / margin));
+  else if (y > innerHeight - margin) window.scrollBy(0, speed * (1 - (innerHeight - y) / margin));
+  repositionDrag();
+  drag.raf = requestAnimationFrame(dragAutoScroll);
+}
+
+function dragEnd(e){
+  if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return;
+  cancelAnimationFrame(drag.raf);
+  const row = drag.row;
+  row.style.transform = '';
+  row.classList.remove('dragging');
+  $('#list').classList.remove('dragActive');
+  window.removeEventListener('pointermove', dragMove);
+  window.removeEventListener('pointerup', dragEnd);
+  window.removeEventListener('pointercancel', dragEnd);
+  drag = null;
+
+  // rebuild items order from DOM order (removed items stay at the end)
+  const orderedIds = [...$('#list').children].map(el => +el.dataset.id);
+  const byId = new Map(items.map(it => [it.id, it]));
+  const reordered = orderedIds.map(id => byId.get(id)).filter(Boolean);
+  const removed = items.filter(it => it.removed);
+  items = [...reordered, ...removed];
+  refreshNames();
+}
+
+/* ================================================================== sorting */
+function applySortToVisible(fn){
+  const vis = visibleItems();
+  fn(vis);
+  items = [...vis, ...items.filter(it => it.removed)];
+  render();
+}
+
+function handleSortChoice(kind){
+  const unk = 1e12; // unknown values sort last
+  switch (kind){
+    case 'name':     applySortToVisible(v => v.sort((a,b) => collator.compare(a.relPath, b.relPath))); break;
+    case 'original': applySortToVisible(v => v.sort((a,b) => a.loadIndex - b.loadIndex)); break;
+    case 'durAsc':   applySortToVisible(v => v.sort((a,b) => (a.duration ?? unk) - (b.duration ?? unk))); break;
+    case 'durDesc':  applySortToVisible(v => v.sort((a,b) => (b.duration ?? -unk) - (a.duration ?? -unk))); break;
+    case 'loudAsc':
+      if (!visibleItems().some(it => it.db != null)){ setExportStatus('Still analyzing loudness — try again in a moment.', 'err'); break; }
+      applySortToVisible(v => v.sort((a,b) => (a.db ?? unk) - (b.db ?? unk)));
+      break;
+    case 'loudDesc':
+      if (!visibleItems().some(it => it.db != null)){ setExportStatus('Still analyzing loudness — try again in a moment.', 'err'); break; }
+      applySortToVisible(v => v.sort((a,b) => (b.db ?? -unk) - (a.db ?? -unk)));
+      break;
+    case 'reverse':  applySortToVisible(v => v.reverse()); break;
+    case 'shuffle':
+      applySortToVisible(v => {
+        for (let i = v.length - 1; i > 0; i--){
+          const j = Math.floor(Math.random() * (i + 1));
+          [v[i], v[j]] = [v[j], v[i]];
+        }
+      });
+      break;
+  }
+}
+
+/* ================================================================== keyboard */
+function moveSelected(delta){
+  const vis = visibleItems();
+  const idx = vis.findIndex(it => it.id === selectedId);
+  if (idx < 0) return;
+  const to = idx + delta;
+  if (to < 0 || to >= vis.length) return;
+  [vis[idx], vis[to]] = [vis[to], vis[idx]];
+  items = [...vis, ...items.filter(it => it.removed)];
+  render();
+  const el = itemById(selectedId)?.el;
+  el && el.scrollIntoView({ block: 'nearest' });
+}
+
+function wireKeyboard(){
+  document.addEventListener('keydown', e => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+    const vis = visibleItems();
+    if (!vis.length) return;
+    const idx = vis.findIndex(it => it.id === selectedId);
+
+    if (e.key === ' '){
+      e.preventDefault();
+      const it = itemById(selectedId) || itemById(currentId) || vis[0];
+      it && togglePlay(it);
+    } else if (e.key === 'Enter'){
+      e.preventDefault();
+      const it = itemById(selectedId) || vis[0];
+      it && playItem(it, 0);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+      e.preventDefault();
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      if (e.altKey || e.metaKey || e.ctrlKey){
+        moveSelected(delta);
+      } else {
+        const to = idx < 0 ? 0 : Math.min(vis.length - 1, Math.max(0, idx + delta));
+        selectItem(vis[to].id);
+        vis[to].el && vis[to].el.scrollIntoView({ block: 'nearest' });
+      }
+    } else if (e.key === 'Backspace' || e.key === 'Delete'){
+      const it = itemById(selectedId);
+      if (it){
+        e.preventDefault();
+        const pos = vis.findIndex(x => x.id === it.id);
+        removeItem(it);
+        const nv = visibleItems();
+        if (nv.length) selectItem(nv[Math.min(pos, nv.length - 1)].id);
+      }
+    }
+  });
+}
+
+/* ================================================================== export: folder */
+function setExportStatus(msg, cls){
+  const el = $('#exportStatus');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+
+async function exportToFolder(){
+  const vis = visibleItems();
+  if (!vis.length){ setExportStatus('Nothing to export.', 'err'); return; }
+  readPanelIntoSettings();
+  computeNames();
+  let out;
+  try {
+    out = await showDirectoryPicker({ id: 'soundsorter-out', mode: 'readwrite' });
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    setExportStatus('Could not open output folder: ' + err.message, 'err');
+    return;
+  }
+  const btns = [$('#exportFolderBtn'), $('#exportZipBtn')];
+  btns.forEach(b => b.disabled = true);
+  try {
+    // preflight: existing files with the same names?
+    const existing = [];
+    for (const it of vis){
+      try { await out.getFileHandle(it.newName); existing.push(it.newName); } catch {}
+    }
+    if (existing.length){
+      const ok = confirm(`${existing.length} file(s) with these names already exist in “${out.name}”.\n\nOverwrite them?`);
+      if (!ok){ setExportStatus('Export cancelled.'); return; }
+    }
+    let sameDir = false;
+    try { sameDir = dirHandle ? await out.isSameEntry(dirHandle) : false; } catch {}
+
+    let done = 0, skipped = 0;
+    const errors = [];
+    for (const it of vis){
+      if (sameDir && it.newName === it.name){ skipped++; continue; } // don't copy a file onto itself
+      try {
+        const fh = await out.getFileHandle(it.newName, { create: true });
+        const w = await fh.createWritable();
+        await w.write(it.file);
+        await w.close();
+        done++;
+        setExportStatus(`Saving… ${done}/${vis.length}`);
+      } catch (err) {
+        console.error('write failed', it.newName, err);
+        errors.push(`${it.newName}: ${err.message}`);
+      }
+    }
+    if (errors.length){
+      setExportStatus(`Saved ${done}/${vis.length}. Failed: ${errors.slice(0,3).join('; ')}${errors.length > 3 ? '…' : ''}`, 'err');
+    } else {
+      setExportStatus(`✓ Saved ${done} file${done === 1 ? '' : 's'} to “${out.name}”` +
+                      (skipped ? ` (${skipped} skipped — same file)` : ''), 'ok');
+    }
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+/* ================================================================== export: zip */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++){
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32Update(u8, crc){
+  for (let i = 0; i < u8.length; i++) crc = CRC_TABLE[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+  return crc;
+}
+async function fileCrc32(file, onBytes){
+  const reader = file.stream().getReader();
+  let crc = 0xFFFFFFFF;
+  while (true){
+    const { done, value } = await reader.read();
+    if (done) break;
+    crc = crc32Update(value, crc);
+    onBytes && onBytes(value.length);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDateTime(ms){
+  const d = new Date(ms || Date.now());
+  const y = Math.max(1980, d.getFullYear());
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+    date: ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+  };
+}
+
+async function buildZipBlob(list, onProgress){
+  const te = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  const totalBytes = list.reduce((s, it) => s + it.size, 0) || 1;
+  let readBytes = 0;
+
+  if (list.length > 0xFFFF) throw new Error('Too many files for ZIP format');
+
+  for (const it of list){
+    const nameBytes = te.encode(it.newName);
+    const { time, date } = dosDateTime(it.file.lastModified);
+    const crc = await fileCrc32(it.file, n => {
+      readBytes += n;
+      onProgress && onProgress(readBytes / totalBytes);
+    });
+    const size = it.file.size;
+    if (size >= 0xFFFFFFFF || offset >= 0xFFFFFFFF)
+      throw new Error('Files too large for ZIP — use “Save to folder…” instead');
+
+    const lh = new ArrayBuffer(30);
+    const v = new DataView(lh);
+    v.setUint32(0, 0x04034b50, true);
+    v.setUint16(4, 20, true);            // version needed
+    v.setUint16(6, 0x0800, true);        // UTF-8 names
+    v.setUint16(8, 0, true);             // method: store
+    v.setUint16(10, time, true);
+    v.setUint16(12, date, true);
+    v.setUint32(14, crc, true);
+    v.setUint32(18, size, true);         // compressed
+    v.setUint32(22, size, true);         // uncompressed
+    v.setUint16(26, nameBytes.length, true);
+    v.setUint16(28, 0, true);
+    parts.push(lh, nameBytes, it.file);
+    central.push({ nameBytes, crc, size, time, date, offset });
+    offset += 30 + nameBytes.length + size;
+  }
+
+  let cdSize = 0;
+  const cdStart = offset;
+  for (const e of central){
+    const ch = new ArrayBuffer(46);
+    const v = new DataView(ch);
+    v.setUint32(0, 0x02014b50, true);
+    v.setUint16(4, (3 << 8) | 20, true); // made by: unix
+    v.setUint16(6, 20, true);
+    v.setUint16(8, 0x0800, true);
+    v.setUint16(10, 0, true);
+    v.setUint16(12, e.time, true);
+    v.setUint16(14, e.date, true);
+    v.setUint32(16, e.crc, true);
+    v.setUint32(20, e.size, true);
+    v.setUint32(24, e.size, true);
+    v.setUint16(28, e.nameBytes.length, true);
+    v.setUint16(30, 0, true);            // extra len
+    v.setUint16(32, 0, true);            // comment len
+    v.setUint16(34, 0, true);            // disk
+    v.setUint16(36, 0, true);            // internal attrs
+    v.setUint32(38, 0o100644 << 16, true); // external attrs: -rw-r--r--
+    v.setUint32(42, e.offset, true);
+    parts.push(ch, e.nameBytes);
+    cdSize += 46 + e.nameBytes.length;
+  }
+  const eocd = new ArrayBuffer(22);
+  const v = new DataView(eocd);
+  v.setUint32(0, 0x06054b50, true);
+  v.setUint16(4, 0, true);
+  v.setUint16(6, 0, true);
+  v.setUint16(8, central.length, true);
+  v.setUint16(10, central.length, true);
+  v.setUint32(12, cdSize, true);
+  v.setUint32(16, cdStart, true);
+  v.setUint16(20, 0, true);
+  parts.push(eocd);
+  return new Blob(parts, { type: 'application/zip' });
+}
+
+async function exportZip(){
+  const vis = visibleItems();
+  if (!vis.length){ setExportStatus('Nothing to export.', 'err'); return; }
+  readPanelIntoSettings();
+  computeNames();
+  const btns = [$('#exportFolderBtn'), $('#exportZipBtn')];
+  btns.forEach(b => b.disabled = true);
+  try {
+    const blob = await buildZipBlob(vis, f => setExportStatus(`Zipping… ${Math.round(f * 100)}%`));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = sanitizeName(folderName ? folderName + ' sorted' : 'sorted audio') + '.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+    setExportStatus(`✓ ZIP ready — ${vis.length} files, ${fmtSize(blob.size)}`, 'ok');
+  } catch (err) {
+    console.error(err);
+    setExportStatus('ZIP failed: ' + err.message, 'err');
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+/* ================================================================== wiring */
+function wirePanel(){
+  const rerun = () => { readPanelIntoSettings(); refreshNames(); };
+  $$('input[name=stemMode]').forEach(r => r.addEventListener('change', rerun));
+  $$('input[name=numPos]').forEach(r => r.addEventListener('change', rerun));
+  $('#baseName').addEventListener('input', () => {
+    $$('input[name=stemMode]').forEach(r => r.checked = r.value === 'replace');
+    rerun();
+  });
+  $('#sep').addEventListener('input', rerun);
+  $('#startAt').addEventListener('input', rerun);
+  $('#padDigits').addEventListener('change', rerun);
+  $('#exportFolderBtn').addEventListener('click', exportToFolder);
+  $('#exportZipBtn').addEventListener('click', exportZip);
+}
+
+function wireToolbar(){
+  $('#openBtn').addEventListener('click', chooseFolder);
+  $('#openBtn2').addEventListener('click', chooseFolder);
+  $('#includeSub').addEventListener('change', e => { settings.includeSub = e.target.checked; saveSettings(); });
+  $('#autoAdvance').addEventListener('change', e => { settings.autoAdvance = e.target.checked; saveSettings(); });
+  $('#volume').addEventListener('input', e => {
+    player.volume = +e.target.value;
+    settings.volume = +e.target.value;
+    saveSettings();
+  });
+  $('#sortSelect').addEventListener('change', e => {
+    handleSortChoice(e.target.value);
+    e.target.selectedIndex = 0;
+  });
+  $('#playAllBtn').addEventListener('click', () => {
+    if (sequenceMode && !player.paused){ stopPlayback(false); return; }
+    const vis = visibleItems();
+    if (!vis.length) return;
+    sequenceMode = true;
+    selectItem(vis[0].id);
+    playItem(vis[0], 0);
+  });
+}
+
+function init(){
+  loadSettings();
+  syncPanelFromSettings();
+  wirePanel();
+  wireToolbar();
+  wireDrop();
+  wireDrag();
+  wireKeyboard();
+
+  // fallback directory input for browsers without showDirectoryPicker
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.id = 'dirInputFallback';
+  input.setAttribute('webkitdirectory', '');
+  input.multiple = true;
+  input.hidden = true;
+  input.addEventListener('change', () => {
+    if (input.files.length) loadFromFileList(input.files);
+    input.value = '';
+  });
+  document.body.appendChild(input);
+
+  if (!window.showDirectoryPicker){
+    $('#exportFolderBtn').hidden = true;
+    $('#supportNote').innerHTML =
+      'Everything runs locally in your browser — files never leave your machine.<br>' +
+      'This browser can\'t write into folders directly, so exports download as a ZIP.';
+  }
+}
+init();
+
+/* ================================================================== test hooks (used by automated checks; harmless in normal use) */
+window.__soundSorterTest = {
+  addFiles(files){ loadFromFileList(files); },
+  getItems(){ return visibleItems().map(it => ({ name: it.name, newName: it.newName, db: it.db, duration: it.duration, hasPeaks: !!it.peaks })); },
+  move(from, to){
+    const vis = visibleItems();
+    const [m] = vis.splice(from, 1);
+    vis.splice(to, 0, m);
+    items = [...vis, ...items.filter(it => it.removed)];
+    render();
+  },
+  setSettings(s){ Object.assign(settings, s); saveSettings(); syncPanelFromSettings(); refreshNames(); },
+  buildZip(){ computeNames(); return buildZipBlob(visibleItems(), () => {}); },
+  crc32(u8){ return (crc32Update(u8, 0xFFFFFFFF) ^ 0xFFFFFFFF) >>> 0; },
+  analysisDone(){ return !analysisRunning; },
+};
+</script>
+</body>
+</html>
