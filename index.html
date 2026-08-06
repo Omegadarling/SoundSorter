@@ -373,6 +373,7 @@ function makeItem(file, relPath){
     size: file.size,
     loadIndex: 0,
     url: null,
+    playUrl: null,  // may differ from url when playback needs a transcoded WAV (AIFF)
     duration: undefined,
     peaks: null,          // Float32Array of per-bin |peak|, drawn as the waveform
     db: null,             // "impact" loudness: max RMS over a 400 ms window, in dBFS
@@ -535,7 +536,10 @@ function loadFromFileList(fileList){
 function finishLoad(found, label){
   generation++;
   stopPlayback(true);
-  for (const it of items) if (it.url) URL.revokeObjectURL(it.url);
+  for (const it of items){
+    if (it.url) URL.revokeObjectURL(it.url);
+    if (it.playUrl && it.playUrl !== it.url) URL.revokeObjectURL(it.playUrl);
+  }
   found.sort((a, b) => collator.compare(a.relPath, b.relPath));
   found.forEach((it, i) => it.loadIndex = i);
   items = found;
@@ -810,6 +814,90 @@ const MAX_DECODE_BYTES = 200 * 1048576;        // lossless formats decode ~2-4x 
 const MAX_DECODE_BYTES_LOSSY = 30 * 1048576;  // lossy formats expand 10-50x into PCM floats
 const LOSSY_EXT = new Set(['.mp3', '.m4a', '.m4b', '.aac', '.opus', '.ogg', '.oga', '.wma',
                            '.weba', '.webm', '.mka', '.amr', '.mp2']);
+const AIFF_EXT = new Set(['.aif', '.aiff', '.aifc']);
+
+/* Chrome/Firefox support AIFF in neither <audio> nor decodeAudioData, so the app
+   ships its own decoder for uncompressed AIFF/AIFC (PCM 8/16/24/32, 'sowt'
+   little-endian, 'twos', and float32/64). Compressed AIFC falls through to the
+   browser decoder (Safari may handle it). */
+function readExtended80(v, o){
+  // 80-bit IEEE extended float, big-endian — AIFF's sample-rate field
+  const sign = (v.getUint8(o) & 0x80) ? -1 : 1;
+  const exp = (((v.getUint8(o) & 0x7F) << 8) | v.getUint8(o + 1)) - 16383;
+  const mant = v.getUint32(o + 2, false) * 4294967296 + v.getUint32(o + 6, false);
+  if (exp === -16383 || mant === 0) return 0;
+  return sign * mant * Math.pow(2, exp - 63);
+}
+
+function decodeAiff(raw){
+  try {
+    const v = new DataView(raw);
+    if (v.byteLength < 12 || v.getUint32(0, false) !== 0x464F524D) return null; // 'FORM'
+    const formType = v.getUint32(8, false);
+    const isAifc = formType === 0x41494643;                                     // 'AIFC'
+    if (formType !== 0x41494646 && !isAifc) return null;                        // 'AIFF'
+    let pos = 12, comm = null, ssnd = null;
+    while (pos + 8 <= v.byteLength){
+      const id = v.getUint32(pos, false), size = v.getUint32(pos + 4, false);
+      if (id === 0x434F4D4D) comm = { pos: pos + 8, size };                     // 'COMM'
+      else if (id === 0x53534E44) ssnd = { pos: pos + 8, size };                // 'SSND'
+      pos += 8 + size + (size & 1);
+    }
+    if (!comm || !ssnd || comm.size < 18) return null;
+    const ch = v.getUint16(comm.pos, false);
+    const frames = v.getUint32(comm.pos + 2, false);
+    const bits = v.getUint16(comm.pos + 6, false);
+    const rate = readExtended80(v, comm.pos + 8);
+    let compression = 0x4E4F4E45;                                               // 'NONE'
+    if (isAifc && comm.size >= 22) compression = v.getUint32(comm.pos + 18, false);
+    const le = compression === 0x736F7774;                                      // 'sowt' = PCM LE
+    const f32 = compression === 0x666C3332 || compression === 0x464C3332;       // 'fl32'/'FL32'
+    const f64 = compression === 0x666C3634 || compression === 0x464C3634;       // 'fl64'/'FL64'
+    const pcm = compression === 0x4E4F4E45 || compression === 0x74776F73 || le; // NONE/'twos'/sowt
+    if (!pcm && !f32 && !f64) return null;                                      // compressed AIFC
+    if (!ch || !frames || !isFinite(rate) || rate < 1000 || rate > 768000) return null;
+    const bytesPer = (f64 ? 64 : f32 ? 32 : bits) / 8;
+    if (!bytesPer || bytesPer !== Math.floor(bytesPer)) return null;
+    const dataStart = ssnd.pos + 8 + v.getUint32(ssnd.pos, false);              // skip offset field
+    const avail = Math.min(frames, Math.floor((v.byteLength - dataStart) / (bytesPer * ch)));
+    if (avail <= 0) return null;
+    const chans = [];
+    for (let c = 0; c < ch; c++) chans.push(new Float32Array(avail));
+    for (let i = 0; i < avail; i++){
+      for (let c = 0; c < ch; c++){
+        const o = dataStart + (i * ch + c) * bytesPer;
+        let s;
+        if (f32) s = v.getFloat32(o, le);
+        else if (f64) s = v.getFloat64(o, le);
+        else if (bits === 8) s = v.getInt8(o) / 128;
+        else if (bits === 16) s = v.getInt16(o, le) / 32768;
+        else if (bits === 24){
+          s = (le
+            ? ((v.getUint8(o) | (v.getUint8(o + 1) << 8) | (v.getUint8(o + 2) << 16)) << 8 >> 8)
+            : ((v.getUint8(o + 2) | (v.getUint8(o + 1) << 8) | (v.getUint8(o) << 16)) << 8 >> 8)) / 8388608;
+        }
+        else if (bits === 32) s = v.getInt32(o, le) / 2147483648;
+        else return null;
+        chans[c][i] = s;
+      }
+    }
+    return {
+      numberOfChannels: ch, length: avail, sampleRate: rate, duration: avail / rate,
+      getChannelData(i){ return chans[i]; },
+    };
+  } catch { return null; }
+}
+
+// Unified decode: AIFF via the built-in decoder, everything else (and AIFF
+// variants it can't parse) via the browser. Returns an AudioBuffer-compatible object.
+async function decodeForApp(it, raw){
+  if (AIFF_EXT.has(it.ext.toLowerCase())){
+    const aiff = decodeAiff(raw);
+    if (aiff) return aiff;
+  }
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx.decodeAudioData(raw);
+}
 
 function queueAnalysis(){
   if (!analysisRunning) runAnalysis();
@@ -842,10 +930,9 @@ async function analyzeItem(it, gen){
   try {
     const cap = LOSSY_EXT.has(it.ext.toLowerCase()) ? MAX_DECODE_BYTES_LOSSY : MAX_DECODE_BYTES;
     if (it.size > cap) throw new Error('file too large to decode');
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const raw = await it.file.arrayBuffer();
     if (gen !== generation) return;
-    const buf = await audioCtx.decodeAudioData(raw);
+    const buf = await decodeForApp(it, raw);
     if (gen !== generation) return;
 
     const len = buf.length, chans = buf.numberOfChannels, sr = buf.sampleRate;
@@ -921,6 +1008,29 @@ function urlFor(it){
   return it.url;
 }
 
+function needsPlaybackTranscode(it){
+  return AIFF_EXT.has(it.ext.toLowerCase()) &&
+         !(player.canPlayType('audio/aiff') || player.canPlayType('audio/x-aiff'));
+}
+
+// Object URL the <audio> element can actually play. AIFF is transcoded to a
+// 24-bit WAV blob on first play in browsers without native AIFF support.
+async function playbackUrlFor(it){
+  if (it.playUrl) return it.playUrl;
+  if (needsPlaybackTranscode(it)){
+    const raw = await it.file.arrayBuffer();
+    let decoded = decodeAiff(raw);
+    if (!decoded){
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      decoded = await audioCtx.decodeAudioData(raw); // compressed AIFC — browser's last chance
+    }
+    it.playUrl = URL.createObjectURL(encodeWav24(decoded, 1).blob);
+  } else {
+    it.playUrl = urlFor(it);
+  }
+  return it.playUrl;
+}
+
 /* per-item gain preview: route the <audio> through a WebAudio gain node so
    boosts above 1.0x are audible (element.volume alone cannot exceed 1) */
 let mediaSrcNode = null, playbackGain = null;
@@ -948,10 +1058,23 @@ player.addEventListener('loadedmetadata', () => {
   pendingSeekFrac = null;
 });
 
-function playItem(it, frac){
-  const url = urlFor(it);
+let playRequest = 0;
+async function playItem(it, frac){
+  const req = ++playRequest;
   ensurePlaybackGraph();
   applyPlaybackGain(it);
+  let url;
+  try {
+    const converting = needsPlaybackTranscode(it) && !it.playUrl;
+    if (converting) setExportStatus(`Converting “${it.name}” for playback…`);
+    url = await playbackUrlFor(it);
+    if (converting) setExportStatus('');
+  } catch (err) {
+    console.warn('playback transcode failed', it.name, err);
+    setExportStatus(`Can't play “${it.name}” — ${(err && err.message) || 'undecodable'}`, 'err');
+    return;
+  }
+  if (req !== playRequest) return; // superseded by a newer play request
   if (currentId === it.id && player.src === url){
     if (frac != null){
       if (player.duration) player.currentTime = frac * player.duration;
@@ -1368,8 +1491,9 @@ async function renderWithGain(it){
   const cap = LOSSY_EXT.has(ext) ? MAX_DECODE_BYTES_LOSSY : MAX_DECODE_BYTES;
   if (it.size > cap) throw new Error(`“${it.name}” is too large to re-render with gain`);
   const raw = await it.file.arrayBuffer();
-  const rate = (ext === '.wav' || ext === '.wave') ? wavSampleRate(raw) : null;
-  let decoded;
+  let decoded = null;
+  if (AIFF_EXT.has(ext)) decoded = decodeAiff(raw); // native-rate decode, no browser needed
+  const rate = !decoded && (ext === '.wav' || ext === '.wave') ? wavSampleRate(raw) : null;
   if (rate){
     let octx = null;
     try { octx = new OfflineAudioContext(1, 1, rate); }

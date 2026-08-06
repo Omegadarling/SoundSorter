@@ -34,4 +34,7 @@ uploaded — everything runs locally.
   sample rate, with a warning if the gain clips; untouched files are copied byte-for-byte.
 - **Flexible naming**: number as prefix or suffix, custom separator, start number, digit
   padding, or replace every name with a new base name.
+- **AIFF support everywhere**: Chrome and Firefox can't play or decode `.aif`/`.aiff`
+  natively, so the app ships its own AIFF decoder (PCM including `sowt`/`twos`,
+  float32/64) — waveforms, loudness, gain, and playback (transcoded on the fly) all work.
 - **Non-destructive**: originals are never touched — exports are copies (folder or ZIP).
