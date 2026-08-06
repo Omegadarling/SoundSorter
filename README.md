@@ -28,6 +28,10 @@ uploaded — everything runs locally.
   Space to play/pause, Backspace to remove from the list).
 - **Play all** auditions the whole sequence in order; a play-mode toggle picks what
   happens when a sound ends — auto-play the next, loop the current one, or stop.
+- **Per-sound volume**: drag any loudness chip left or right to turn that sound down or
+  up (double-click resets). Playback previews the change, the waveform rescales, and
+  exports apply it — adjusted files are re-rendered as 24-bit WAV at their original
+  sample rate, with a warning if the gain clips; untouched files are copied byte-for-byte.
 - **Flexible naming**: number as prefix or suffix, custom separator, start number, digit
   padding, or replace every name with a new base name.
 - **Non-destructive**: originals are never touched — exports are copies (folder or ZIP).

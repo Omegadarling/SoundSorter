@@ -130,6 +130,7 @@
     justify-self:end; font-size:11.5px; font-variant-numeric:tabular-nums;
     padding:3px 7px; border-radius:20px; background:var(--bg); color:var(--text-dim);
     border:1px solid var(--border); white-space:nowrap;
+    cursor:ew-resize; touch-action:none; user-select:none; -webkit-user-select:none;
   }
   .removeBtn{
     border:none; background:none; color:var(--text-faint); font-size:14px;
@@ -337,6 +338,7 @@ function sanitizeName(s){
   return stripIllegal(s).replace(/^[\s.]+|[\s.]+$/g, '');
 }
 
+const dbToLin = db => Math.pow(10, db / 20);
 function dbColor(db){
   // map -50..0 dB → blue..red
   const t = Math.min(1, Math.max(0, (db + 50) / 50));
@@ -376,6 +378,8 @@ function makeItem(file, relPath){
     db: null,             // "impact" loudness: max RMS over a 400 ms window, in dBFS
     rmsDb: null,          // whole-file RMS, in dBFS
     analyzeFailed: false,
+    gainDb: 0,            // user volume adjustment via the dB chip, applied on export
+    renderCache: null,    // { gainDb, blob, clipped } — rendered WAV for that gain
     removed: false,
     newName: '',
     el: null,
@@ -445,16 +449,17 @@ function computeNames(){
     let name = settings.numPos === 'suffix' ? `${stem}${sep}${num}` : `${num}${sep}${stem}`;
     name = sanitizeName(name);
     if (!name) name = num;
-    it.newName = name + it.ext;
+    it.newName = name + (it.gainDb ? '.wav' : it.ext); // gained files are re-rendered as WAV
     it.numLabel = num;
   });
   // Composed names can collide (e.g. empty separator: "1"+"23" vs "12"+"3");
   // exports would silently overwrite, so disambiguate here for every consumer.
   const taken = new Set();
   for (const it of vis){
-    const base = it.ext ? it.newName.slice(0, it.newName.length - it.ext.length) : it.newName;
+    const ext = it.gainDb ? '.wav' : it.ext;
+    const base = ext ? it.newName.slice(0, it.newName.length - ext.length) : it.newName;
     let name = it.newName, k = 2;
-    while (taken.has(name.toLowerCase())){ name = `${base} (${k})${it.ext}`; k++; }
+    while (taken.has(name.toLowerCase())){ name = `${base} (${k})${ext}`; k++; }
     taken.add(name.toLowerCase());
     it.newName = name;
   }
@@ -648,7 +653,7 @@ function buildRow(it){
     </div>
     <canvas class="wave" title="Click to play from here"></canvas>
     <div class="durCell"><span class="dur"></span><span class="fsize"></span></div>
-    <span class="dbChip" title="Peak loudness (max RMS over 400 ms), dBFS">…</span>
+    <span class="dbChip">…</span>
     <button class="removeBtn" title="Remove from list (file is not deleted)" aria-label="Remove">✕</button>`;
   it.el = li;
   li.querySelector('.num').textContent = it.numLabel || '';
@@ -666,11 +671,11 @@ function buildRow(it){
   drawWave(it);
 
   li.addEventListener('click', e => {
-    if (e.target.closest('button') || e.target.closest('canvas')) return;
+    if (e.target.closest('button') || e.target.closest('canvas') || e.target.closest('.dbChip')) return;
     selectItem(it.id);
   });
   li.addEventListener('dblclick', e => {
-    if (e.target.closest('button') || e.target.closest('canvas')) return;
+    if (e.target.closest('button') || e.target.closest('canvas') || e.target.closest('.dbChip')) return;
     playItem(it, 0);
   });
   li.querySelector('.playBtn').addEventListener('click', () => togglePlay(it));
@@ -692,13 +697,26 @@ function updateRowStats(it){
     durEl.textContent = fmtTime(it.duration);
   }
   const chip = it.el.querySelector('.dbChip');
-  if (it.db != null){
-    chip.textContent = it.db.toFixed(1) + ' dB';
-    chip.style.color = dbColor(it.db);
-    chip.style.borderColor = 'color-mix(in srgb, ' + dbColor(it.db) + ' 40%, transparent)';
+  const eff = it.db != null ? it.db + it.gainDb : null;
+  if (eff != null){
+    chip.textContent = eff.toFixed(1) + ' dB';
+    chip.style.color = dbColor(eff);
+    chip.style.borderColor = 'color-mix(in srgb, ' + dbColor(eff) + ' 40%, transparent)';
+  } else if (it.gainDb){
+    chip.textContent = (it.gainDb > 0 ? '+' : '') + it.gainDb.toFixed(1) + ' dB';
   } else if (it.analyzeFailed){
     chip.textContent = 'n/a';
+  } else {
+    chip.textContent = '…'; // analysis pending, no gain — restore the placeholder
+    chip.style.color = '';
+    chip.style.borderColor = '';
   }
+  chip.style.cursor = it.analyzeFailed ? 'default' : '';
+  chip.title = it.analyzeFailed
+    ? 'Could not decode this file — volume can’t be adjusted.'
+    : 'Loudness (max RMS over 400 ms, dBFS). Drag left/right to change this sound’s volume; double-click to reset.'
+      + (it.db != null ? `\nMeasured ${it.db.toFixed(1)} dB` : '')
+      + (it.gainDb ? `\nGain ${it.gainDb > 0 ? '+' : ''}${it.gainDb.toFixed(1)} dB — exports as WAV` : '');
 }
 
 function updateHeaderInfo(){
@@ -739,6 +757,7 @@ function selectItem(id){
 }
 
 function removeItem(it){
+  if (exporting) return;
   if (it.id === currentId) stopPlayback(true);
   it.removed = true;
   if (selectedId === it.id) selectedId = null;
@@ -760,10 +779,11 @@ function drawWave(it){
   if (it.peaks){
     const bins = it.peaks.length;
     const barW = W / bins;
+    const gainLin = dbToLin(it.gainDb || 0); // waveform reflects the adjusted volume
     for (let i = 0; i < bins; i++){
       // gamma-compress a little so quiet material stays visible,
       // but keep absolute scale so loud files visibly tower over quiet ones
-      const amp = Math.pow(it.peaks[i], 0.75);
+      const amp = Math.pow(Math.min(1, it.peaks[i] * gainLin), 0.75);
       const h = Math.max(1, amp * (H - 4));
       ctx.fillStyle = (i / bins) < frac ? '#ffb454' : '#4a5768';
       ctx.fillRect(i * barW, mid - h / 2, Math.max(1, barW - 0.4), h);
@@ -830,6 +850,8 @@ async function analyzeItem(it, gen){
 
     const len = buf.length, chans = buf.numberOfChannels, sr = buf.sampleRate;
     it.duration = buf.duration;
+    it.sampleRate = sr;
+    it.channels = chans;
 
     const peaks = new Float32Array(WAVE_BINS);
     const samplesPerBin = Math.max(1, len / WAVE_BINS);
@@ -899,6 +921,27 @@ function urlFor(it){
   return it.url;
 }
 
+/* per-item gain preview: route the <audio> through a WebAudio gain node so
+   boosts above 1.0x are audible (element.volume alone cannot exceed 1) */
+let mediaSrcNode = null, playbackGain = null;
+function ensurePlaybackGraph(){
+  if (mediaSrcNode) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    mediaSrcNode = audioCtx.createMediaElementSource(player);
+    playbackGain = audioCtx.createGain();
+    mediaSrcNode.connect(playbackGain);
+    playbackGain.connect(audioCtx.destination);
+  } catch (err) {
+    console.warn('gain preview unavailable:', err);
+    mediaSrcNode = { failed: true }; // don't retry; playback continues without preview gain
+  }
+}
+function applyPlaybackGain(it){
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  if (playbackGain) playbackGain.gain.value = dbToLin(it ? it.gainDb : 0);
+}
+
 let pendingSeekFrac = null; // latest requested seek, applied once metadata is available
 player.addEventListener('loadedmetadata', () => {
   if (pendingSeekFrac != null && player.duration) player.currentTime = pendingSeekFrac * player.duration;
@@ -907,6 +950,8 @@ player.addEventListener('loadedmetadata', () => {
 
 function playItem(it, frac){
   const url = urlFor(it);
+  ensurePlaybackGraph();
+  applyPlaybackGain(it);
   if (currentId === it.id && player.src === url){
     if (frac != null){
       if (player.duration) player.currentTime = frac * player.duration;
@@ -1039,7 +1084,7 @@ function wireDrag(){
   list.addEventListener('pointerdown', e => {
     if (e.button !== 0 || e.isPrimary === false) return;
     const handle = e.target.closest('.handle');
-    if (!handle || drag) return;
+    if (!handle || drag || exporting) return;
     const row = handle.closest('li.row');
     if (!row) return;
     e.preventDefault();
@@ -1120,6 +1165,61 @@ function dragEnd(e){
   refreshNames();
 }
 
+/* ==================================================== per-item volume (dB chip drag) */
+let chipDrag = null, lastChipDragEnd = 0, exporting = false;
+
+function setItemGain(it, g){
+  if (exporting) return;        // names and payloads are frozen while an export runs
+  if (it.analyzeFailed) return; // undecodable files can't be re-rendered with gain
+  const wasGained = !!it.gainDb;
+  it.gainDb = Math.max(-24, Math.min(24, Math.round(g * 10) / 10));
+  it.renderCache = null;
+  updateRowStats(it);
+  drawWave(it);
+  if (it.id === currentId) applyPlaybackGain(it);
+  if (wasGained !== !!it.gainDb) refreshNames(); // 0 <-> nonzero flips the exported extension
+}
+
+function wireChipDrag(){
+  const list = $('#list');
+  list.addEventListener('pointerdown', e => {
+    const chip = e.target.closest('.dbChip');
+    if (!chip || e.button !== 0 || chipDrag || exporting) return;
+    const row = chip.closest('li.row');
+    const it = row && itemById(+row.dataset.id);
+    if (!it || it.analyzeFailed) return;
+    e.preventDefault();
+    try { chip.setPointerCapture(e.pointerId); } catch {}
+    chipDrag = { it, pointerId: e.pointerId, startX: e.clientX, startGain: it.gainDb, moved: false };
+    const move = ev => {
+      if (ev.pointerId !== chipDrag.pointerId) return;
+      const dx = ev.clientX - chipDrag.startX;
+      if (!chipDrag.moved && Math.abs(dx) < 3) return; // dead zone: a double-click must not nudge the gain
+      chipDrag.moved = true;
+      setItemGain(it, chipDrag.startGain + (dx - Math.sign(dx) * 3) * 0.2); // 5 px per dB
+    };
+    const up = ev => {
+      if (ev.pointerId !== undefined && ev.pointerId !== chipDrag.pointerId) return;
+      if (chipDrag.moved) lastChipDragEnd = performance.now();
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      chipDrag = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+  list.addEventListener('dblclick', e => {
+    const chip = e.target.closest('.dbChip');
+    if (!chip) return;
+    if (performance.now() - lastChipDragEnd < 500) return; // two quick drags, not a reset
+    const row = chip.closest('li.row');
+    const it = row && itemById(+row.dataset.id);
+    if (it) setItemGain(it, 0);
+  });
+}
+
 /* ================================================================== sorting */
 function applySortToVisible(fn){
   const vis = visibleItems();
@@ -1129,6 +1229,7 @@ function applySortToVisible(fn){
 }
 
 function handleSortChoice(kind){
+  if (exporting) return;
   const unk = 1e12; // unknown values sort last
   switch (kind){
     case 'name':     applySortToVisible(v => v.sort((a,b) => collator.compare(a.relPath, b.relPath))); break;
@@ -1157,6 +1258,7 @@ function handleSortChoice(kind){
 
 /* ================================================================== keyboard */
 function moveSelected(delta){
+  if (exporting) return;
   const vis = visibleItems();
   const idx = vis.findIndex(it => it.id === selectedId);
   if (idx < 0) return;
@@ -1171,7 +1273,7 @@ function moveSelected(delta){
 
 function wireKeyboard(){
   document.addEventListener('keydown', e => {
-    if (drag) return; // list mutations mid-drag would orphan the dragged row
+    if (drag || chipDrag) return; // list mutations mid-drag would orphan the dragged row/chip
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     const onInteractive = t instanceof Element && (t.isContentEditable || t.closest('button,a[href],[role="button"]'));
@@ -1211,6 +1313,99 @@ function wireKeyboard(){
   });
 }
 
+/* ================================================================== gain rendering */
+function wavSampleRate(buf){
+  // read the fmt chunk's sample rate so WAV sources re-render without resampling
+  try {
+    const v = new DataView(buf);
+    if (v.getUint32(0, false) !== 0x52494646 || v.getUint32(8, false) !== 0x57415645) return null; // "RIFF"/"WAVE"
+    let pos = 12;
+    while (pos + 8 <= v.byteLength){
+      const id = v.getUint32(pos, false), size = v.getUint32(pos + 4, true);
+      if (id === 0x666d7420){ // "fmt "
+        const rate = v.getUint32(pos + 12, true);
+        return rate >= 8000 && rate <= 384000 ? rate : null;
+      }
+      pos += 8 + size + (size & 1);
+    }
+  } catch {}
+  return null;
+}
+
+function encodeWav24(buf, gainLin){
+  const ch = buf.numberOfChannels, n = buf.length, sr = buf.sampleRate;
+  const blockAlign = ch * 3, dataSize = n * blockAlign;
+  if (44 + dataSize > 0x7FFFFFF0) throw new Error('rendered file too large');
+  const out = new ArrayBuffer(44 + dataSize);
+  const v = new DataView(out);
+  const w4 = (o, s) => { for (let i = 0; i < 4; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w4(0, 'RIFF'); v.setUint32(4, 36 + dataSize, true); w4(8, 'WAVE');
+  w4(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * blockAlign, true);
+  v.setUint16(32, blockAlign, true); v.setUint16(34, 24, true);
+  w4(36, 'data'); v.setUint32(40, dataSize, true);
+  const chans = [];
+  for (let c = 0; c < ch; c++) chans.push(buf.getChannelData(c));
+  let clipped = 0, o = 44;
+  for (let i = 0; i < n; i++){
+    for (let c = 0; c < ch; c++){
+      let s = chans[c][i] * gainLin;
+      if (s > 1){ s = 1; clipped++; }
+      else if (s < -1){ s = -1; clipped++; }
+      const q = Math.round(s * 8388607);
+      v.setUint8(o, q & 0xFF); v.setUint8(o + 1, (q >> 8) & 0xFF); v.setUint8(o + 2, (q >> 16) & 0xFF);
+      o += 3;
+    }
+  }
+  return { blob: new Blob([out], { type: 'audio/wav' }), clipped };
+}
+
+// Re-render a file with its gain applied, as 24-bit PCM WAV. WAV sources decode
+// at their own sample rate (no resample); other formats use the context rate.
+async function renderWithGain(it){
+  if (it.renderCache && it.renderCache.gainDb === it.gainDb) return it.renderCache.blob;
+  const ext = it.ext.toLowerCase();
+  const cap = LOSSY_EXT.has(ext) ? MAX_DECODE_BYTES_LOSSY : MAX_DECODE_BYTES;
+  if (it.size > cap) throw new Error(`“${it.name}” is too large to re-render with gain`);
+  const raw = await it.file.arrayBuffer();
+  const rate = (ext === '.wav' || ext === '.wave') ? wavSampleRate(raw) : null;
+  let decoded;
+  if (rate){
+    let octx = null;
+    try { octx = new OfflineAudioContext(1, 1, rate); }
+    catch {} // rate above this browser's max context rate (Safari/Firefox cap ~192 kHz) — fall back to a resampled decode
+    if (octx) decoded = await octx.decodeAudioData(raw);
+  }
+  if (!decoded){
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    decoded = await audioCtx.decodeAudioData(raw);
+  }
+  const { blob, clipped } = encodeWav24(decoded, dbToLin(it.gainDb));
+  it.renderCache = { gainDb: it.gainDb, blob, clipped };
+  return blob;
+}
+
+// best-effort payload size for progress and the ZIP fail-fast: rendered WAVs are
+// far larger than their (often lossy) sources
+function predictedPayloadSize(it){
+  if (!it.gainDb) return it.file.size;
+  if (it.renderCache && it.renderCache.gainDb === it.gainDb) return it.renderCache.blob.size; // exact
+  if (isFinite(it.duration))
+    return 44 + Math.ceil(it.duration * (it.sampleRate || 48000)) * (it.channels || 2) * 3;
+  return it.file.size * 16; // no metadata — assume worst-case lossy expansion
+}
+
+function gainSummary(vis){
+  const rendered = vis.filter(x => x.gainDb).length;
+  const clipped = vis.filter(x => x.gainDb && x.renderCache && x.renderCache.clipped > 0).length;
+  return {
+    rendered,
+    clipped,
+    text: (rendered ? ` — ${rendered} re-rendered with gain as WAV` : '') +
+          (clipped ? ` ⚠ ${clipped} clipped at 0 dBFS, consider less gain` : ''),
+  };
+}
+
 /* ================================================================== export: folder */
 function setExportStatus(msg, cls){
   const el = $('#exportStatus');
@@ -1233,6 +1428,7 @@ async function exportToFolder(){
   }
   const btns = [$('#exportFolderBtn'), $('#exportZipBtn')];
   btns.forEach(b => b.disabled = true);
+  exporting = true; // freeze names/gains: mutations mid-export would desync name and payload
   try {
     // preflight: existing files with the same names?
     const existing = [];
@@ -1252,26 +1448,32 @@ async function exportToFolder(){
     // unconditionally pre-read every such Y into memory before any write.
     const destNames = new Set(vis.map(x => x.newName));
     const preload = vis.filter(x => x.newName !== x.name && destNames.has(x.name));
-    try {
-      for (const x of preload){
-        setExportStatus(`Preparing… reading “${x.name}”`);
-        x.exportData = await x.file.arrayBuffer();
+    for (const x of preload){
+      setExportStatus(`Preparing… reading “${x.name}”`);
+      try {
+        x.exportData = x.gainDb ? await renderWithGain(x) : await x.file.arrayBuffer();
+      } catch (err) {
+        setExportStatus(`Export aborted before writing anything — could not read “${x.name}”: ${err.message}`, 'err');
+        return;
       }
-    } catch (err) {
-      setExportStatus('Export aborted before writing anything — could not read a source file: ' + err.message, 'err');
-      return;
     }
 
     let done = 0, skipped = 0;
+    const written = [];
     const errors = [];
     for (const it of vis){
-      if (sameDir && it.newName === it.name){ skipped++; continue; } // don't copy a file onto itself
+      // identical name in the same dir is a no-op copy — but only when no gain
+      // is applied (a gained item's payload is a fresh render, not the original)
+      if (sameDir && it.newName === it.name && !it.gainDb){ skipped++; continue; }
       try {
+        if (it.gainDb && !it.exportData) setExportStatus(`Rendering “${it.newName}”…`);
+        const payload = it.exportData ?? (it.gainDb ? await renderWithGain(it) : it.file);
         const fh = await out.getFileHandle(it.newName, { create: true });
         const w = await fh.createWritable();
-        await w.write(it.exportData ?? it.file);
+        await w.write(payload);
         await w.close();
         it.exportData = null;
+        written.push(it);
         done++;
         setExportStatus(`Saving… ${done}/${vis.length}`);
       } catch (err) {
@@ -1282,10 +1484,13 @@ async function exportToFolder(){
     if (errors.length){
       setExportStatus(`Saved ${done}/${vis.length}. Failed: ${errors.slice(0,3).join('; ')}${errors.length > 3 ? '…' : ''}`, 'err');
     } else {
+      const gs = gainSummary(written); // count only what was actually written
       setExportStatus(`✓ Saved ${done} file${done === 1 ? '' : 's'} to “${out.name}”` +
-                      (skipped ? ` (${skipped} skipped — same file)` : ''), 'ok');
+                      (skipped ? ` (${skipped} skipped — same file)` : '') + gs.text,
+                      gs.clipped ? 'err' : 'ok');
     }
   } finally {
+    exporting = false;
     vis.forEach(x => { x.exportData = null; }); // release any pre-read buffers
     btns.forEach(b => b.disabled = false);
   }
@@ -1330,25 +1535,32 @@ async function buildZipBlob(list, onProgress){
   const parts = [];
   const central = [];
   let offset = 0;
-  const totalBytes = list.reduce((s, it) => s + it.size, 0) || 1;
+  const totalBytes = list.reduce((s, it) => s + predictedPayloadSize(it), 0) || 1;
   let readBytes = 0;
 
   if (list.length > 0xFFFF) throw new Error('Too many files for ZIP format');
 
   // fail fast before hashing gigabytes: every offset must fit the 32-bit fields (no Zip64)
   let predicted = 0;
-  for (const it of list) predicted += 30 + te.encode(it.newName).length + it.file.size;
+  for (const it of list) predicted += 30 + te.encode(it.newName).length + predictedPayloadSize(it);
   if (predicted >= 0xFFFFFFFF || list.some(it => it.file.size >= 0xFFFFFFFF))
     throw new Error('Total size exceeds the 4 GB ZIP limit — use “Save to folder…” instead');
 
   for (const it of list){
     const nameBytes = te.encode(it.newName);
     const { time, date } = dosDateTime(it.file.lastModified);
-    const crc = await fileCrc32(it.file, n => {
+    let payload = it.file;
+    if (it.gainDb){
+      try { payload = await renderWithGain(it); }
+      catch (err) {
+        throw new Error(`Could not render “${it.name}” with gain (${err.message}) — reset its dB chip or remove it, then retry`);
+      }
+    }
+    const crc = await fileCrc32(payload, n => {
       readBytes += n;
-      onProgress && onProgress(readBytes / totalBytes);
+      onProgress && onProgress(Math.min(1, readBytes / totalBytes));
     });
-    const size = it.file.size;
+    const size = payload.size;
     if (size >= 0xFFFFFFFF)
       throw new Error('Files too large for ZIP — use “Save to folder…” instead');
 
@@ -1365,7 +1577,7 @@ async function buildZipBlob(list, onProgress){
     v.setUint32(22, size, true);         // uncompressed
     v.setUint16(26, nameBytes.length, true);
     v.setUint16(28, 0, true);
-    parts.push(lh, nameBytes, it.file);
+    parts.push(lh, nameBytes, payload);
     central.push({ nameBytes, crc, size, time, date, offset });
     offset += 30 + nameBytes.length + size;
     if (offset >= 0xFFFFFFFF) // re-check AFTER accumulating, or cdStart truncates mod 2^32
@@ -1418,6 +1630,7 @@ async function exportZip(){
   computeNames();
   const btns = [$('#exportFolderBtn'), $('#exportZipBtn')];
   btns.forEach(b => b.disabled = true);
+  exporting = true; // freeze names/gains while the archive is built
   try {
     const blob = await buildZipBlob(vis, f => setExportStatus(`Zipping… ${Math.round(f * 100)}%`));
     const a = document.createElement('a');
@@ -1427,18 +1640,21 @@ async function exportZip(){
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
-    setExportStatus(`✓ ZIP ready — ${vis.length} files, ${fmtSize(blob.size)}`, 'ok');
+    const gs = gainSummary(vis);
+    setExportStatus(`✓ ZIP ready — ${vis.length} files, ${fmtSize(blob.size)}` + gs.text,
+                    gs.clipped ? 'err' : 'ok');
   } catch (err) {
     console.error(err);
     setExportStatus('ZIP failed: ' + err.message, 'err');
   } finally {
+    exporting = false;
     btns.forEach(b => b.disabled = false);
   }
 }
 
 /* ================================================================== wiring */
 function wirePanel(){
-  const rerun = () => { readPanelIntoSettings(); refreshNames(); };
+  const rerun = () => { if (exporting) return; readPanelIntoSettings(); refreshNames(); };
   $$('input[name=stemMode]').forEach(r => r.addEventListener('change', rerun));
   $$('input[name=numPos]').forEach(r => r.addEventListener('change', rerun));
   $('#baseName').addEventListener('input', () => {
@@ -1495,6 +1711,7 @@ function init(){
   wireToolbar();
   wireDrop();
   wireDrag();
+  wireChipDrag();
   wireKeyboard();
 
   // fallback directory input for browsers without showDirectoryPicker
@@ -1522,7 +1739,9 @@ init();
 /* ================================================================== test hooks (used by automated checks; harmless in normal use) */
 window.__soundSorterTest = {
   addFiles(files){ loadFromFileList(files); },
-  getItems(){ return visibleItems().map(it => ({ name: it.name, newName: it.newName, db: it.db, duration: it.duration, hasPeaks: !!it.peaks })); },
+  getItems(){ return visibleItems().map(it => ({ name: it.name, newName: it.newName, db: it.db, gainDb: it.gainDb, duration: it.duration, hasPeaks: !!it.peaks })); },
+  setGain(index, db){ const it = visibleItems()[index]; if (it) setItemGain(it, db); },
+  renderGain(index){ return renderWithGain(visibleItems()[index]); },
   move(from, to){
     const vis = visibleItems();
     const [m] = vis.splice(from, 1);
