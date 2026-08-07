@@ -1,0 +1,35 @@
+#!/bin/sh
+# Exits 0 only when this container is actually serving THIS release.
+# Runs with no network (the deployer's candidate check uses --network none),
+# so it must only ever talk to loopback.
+set -eu
+
+EXPECTED="{\"game\":\"soundsorter\",\"releaseId\":\"$RELEASE_ID\",\"version\":\"$RELEASE_VERSION\",\"sourceCommit\":\"$SOURCE_COMMIT\",\"runtimeManifestSha256\":\"$RUNTIME_MANIFEST_SHA256\"}"
+BASE_URL=http://127.0.0.1:8080
+
+headers() {
+  curl -fsS --max-time 3 -D - -o /dev/null "$@"
+}
+
+require_header() {
+  printf '%s\n' "$1" | tr -d '\r' | grep -Eiq "$2"
+}
+
+ROOT=$(curl -fsS --max-time 3 "$BASE_URL/")
+ACTUAL=$(curl -fsS --max-time 3 "$BASE_URL/release.json")
+
+test "$ACTUAL" = "$EXPECTED"
+
+# The root document must be the real app, not an error or directory listing.
+printf '%s\n' "$ROOT" | grep -q '<title>SoundSorter</title>'
+printf '%s\n' "$ROOT" | grep -q 'id="workspace"'
+printf '%s\n' "$ROOT" | grep -q 'id="exportFolderBtn"'
+
+ROOT_HEADERS=$(headers "$BASE_URL/")
+RELEASE_HEADERS=$(headers "$BASE_URL/release.json")
+
+require_header "$ROOT_HEADERS" '^HTTP/[0-9.]+ 200([[:space:]]|$)'
+require_header "$ROOT_HEADERS" '^Cache-Control: no-cache, must-revalidate$'
+require_header "$ROOT_HEADERS" '^X-Content-Type-Options: nosniff$'
+require_header "$RELEASE_HEADERS" '^HTTP/[0-9.]+ 200([[:space:]]|$)'
+require_header "$RELEASE_HEADERS" '^Cache-Control: no-store$'

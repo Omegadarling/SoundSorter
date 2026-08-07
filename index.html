@@ -287,6 +287,7 @@
   <span><kbd>⌫</kbd> remove from list</span>
   <span class="spacer"></span>
   <span>SoundSorter — local only, nothing is uploaded</span>
+  <span id="buildInfo" hidden></span>
 </footer>
 
 <script>
@@ -1824,6 +1825,22 @@ function wireToolbar(){
   });
 }
 
+// When served (not opened as a local file), show which build this is so alpha
+// testers can report it. Silently absent for a file:// copy — there's no server.
+async function showBuildInfo(){
+  if (location.protocol === 'file:') return;
+  try {
+    const res = await fetch('release.json', { cache: 'no-store' });
+    if (!res.ok) return;
+    const info = await res.json();
+    if (!info || !info.version) return;
+    const el = $('#buildInfo');
+    el.textContent = `v${info.version}`;
+    el.title = `release ${info.releaseId || '?'} · commit ${(info.sourceCommit || '').slice(0, 12)}`;
+    el.hidden = false;
+  } catch {}
+}
+
 function init(){
   loadSettings();
   const header = document.querySelector('header');
@@ -1850,6 +1867,8 @@ function init(){
     input.value = '';
   });
   document.body.appendChild(input);
+
+  showBuildInfo();
 
   if (!window.showDirectoryPicker){
     $('#exportFolderBtn').hidden = true;

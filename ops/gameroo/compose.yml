@@ -1,0 +1,52 @@
+# Reference copy of the canonical hardened Gameroo compose template
+# (guide section 3), unmodified — SoundSorter is stateless, so no volume block.
+# The human installs this at /srv/soundsorter/compose.yml (root:root 0644).
+# The deployer supplies every variable; never bake per-release values in here.
+name: "${GAME_PROJECT:?set GAME_PROJECT}"
+
+services:
+  game:
+    image: "${GAME_IMAGE:?set GAME_IMAGE}"
+    pull_policy: never
+    container_name: "${GAME_CONTAINER:?set GAME_CONTAINER}"
+    labels:
+      com.gameroo.game: "${GAME_SLUG:?set GAME_SLUG}"
+      com.gameroo.release: "${RELEASE_ID:?set RELEASE_ID}"
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${GAME_HOST_PORT:?set GAME_HOST_PORT}:${GAME_CONTAINER_PORT:?set GAME_CONTAINER_PORT}/tcp"
+    networks:
+      - runtime
+    env_file:
+      - "${GAME_ENV_FILE:?set GAME_ENV_FILE}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  runtime:
+    name: "${GAME_NETWORK:?set GAME_NETWORK}"
+    driver: bridge
+    labels:
+      com.gameroo.game: "${GAME_SLUG:?set GAME_SLUG}"

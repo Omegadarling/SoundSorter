@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	root * /app/public
+
+	header {
+		-Server
+		Cross-Origin-Resource-Policy "same-origin"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+	}
+
+	@release path /release.json
+	header @release Cache-Control "no-store"
+
+	@defaultCache {
+		not path /release.json
+	}
+	header @defaultCache Cache-Control "no-cache, must-revalidate"
+
+	file_server
+}
