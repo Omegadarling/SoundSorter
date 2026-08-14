@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/icon.webp" width="144" alt="SoundSorter app icon">
+</p>
+
 # SoundSorter
 
 A single-file, fully local web app for ordering a folder of audio files by ear (and by eye).
