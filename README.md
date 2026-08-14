@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/icon.webp" width="144" alt="SoundSorter app icon">
+</p>
+
 # SoundSorter
 
 A single-file, fully local web app for ordering a folder of audio files by ear (and by eye).
@@ -7,6 +11,10 @@ their waveforms side by side, and drag them into your preferred order — small 
 sounds first, grand triumphant finale last. Then save renamed copies with the sort order
 baked into the filenames (`01_whoosh.wav`, `02_hit.wav`, … or `name_01.wav`, or a full
 rename like `impact_01.wav`).
+
+![SoundSorter orders six audio files from quiet to loud using waveforms and loudness measurements, with numbered output filenames ready to save](docs/images/soundsorter.png)
+
+*Audition, compare, and reorder every sound in one view, then preview the numbered filenames before saving non-destructive copies.*
 
 ## Use it
 
