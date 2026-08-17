@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/icon.webp" width="144" alt="SoundSorter app icon">
+  <img src="docs/images/icon.webp" width="176" alt="SoundSorter app icon">
 </p>
 
 # SoundSorter
@@ -12,9 +12,11 @@ sounds first, grand triumphant finale last. Then save renamed copies with the so
 baked into the filenames (`01_whoosh.wav`, `02_hit.wav`, … or `name_01.wav`, or a full
 rename like `impact_01.wav`).
 
+## Actual interface
+
 ![SoundSorter orders six audio files from quiet to loud using waveforms and loudness measurements, with numbered output filenames ready to save](docs/images/soundsorter.png)
 
-*Audition, compare, and reorder every sound in one view, then preview the numbered filenames before saving non-destructive copies.*
+*Actual SoundSorter session using six local demo WAV files: audition, compare, and reorder every sound in one view, then preview the numbered filenames before saving non-destructive copies.*
 
 ## Use it
 
